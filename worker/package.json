@@ -1,0 +1,22 @@
+{
+  "name": "chaoxing-seat-reserver-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Single-seat Chaoxing reservation Worker",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260921.1",
+"typescript": "^5.9.2",
+    "wrangler": "^4.38.0"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}

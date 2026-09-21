@@ -1,0 +1,4 @@
+# Never commit a real value in .dev.vars.
+CHAOOXING_COOKIE="replace-with-your-current-cookie"
+CHAOOXING_RESERVE_PAGE_URL="https://office.chaoxing.com/front/third/apps/seat/select?..."
+ADMIN_TOKEN="replace-with-a-long-random-admin-token"
