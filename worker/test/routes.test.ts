@@ -31,5 +31,6 @@ test("dry run reads the page but never calls the submit endpoint", async () => {
   const response = await worker.fetch(new Request("https://worker.example/run", { method: "POST", headers: { Authorization: "Bearer test-admin-token" } }), env, {} as ExecutionContext);
   const body = await response.json() as { ok: boolean; result: { kind: string; encGenerated: boolean; targetDay: string } };
   assert.equal(response.status, 200); assert.equal(body.ok, true); assert.equal(body.result.kind, "DRY_RUN"); assert.equal(body.result.encGenerated, true); assert.equal(body.result.targetDay, "2026-09-22");
-  assert.deepEqual(urls, [env.CHAOOXING_RESERVE_PAGE_URL]);
+  const expected = new URL(env.CHAOOXING_RESERVE_PAGE_URL!); expected.searchParams.set("day", "2026-09-22");
+  assert.deepEqual(urls, [expected.toString()]);
 });
