@@ -11,7 +11,8 @@
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
     "build": "wrangler deploy --dry-run --outdir .build",
-    "test:runtime": "npm run build && node --test test/runtime.test.mjs"
+    "test:runtime": "npm run build && node --test test/runtime.test.mjs",
+    "check:contract": "node scripts/check-contract.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260921.1",

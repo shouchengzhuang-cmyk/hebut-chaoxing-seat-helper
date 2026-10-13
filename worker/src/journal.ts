@@ -1,4 +1,4 @@
-import type { RunResult } from "./types.ts";
+import type { RunResult, ReservationTarget } from "./types.ts";
 import type { Snapshot } from "./status.ts";
 export interface Operation {
   phase: "READY" | "SUBMITTED_UNVERIFIED" | "CONFIRMED" | "REJECTED";
@@ -6,9 +6,30 @@ export interface Operation {
   nextAttemptAt: number;
   result?: RunResult;
 }
+export interface ArchivedLifecycle {
+  day: string;
+  target: ReservationTarget;
+  snapshot?: Snapshot;
+  archivedAt: number;
+  reason: "SERVER_TERMINAL" | "LOCAL_TASK_INTERVAL_ENDED";
+  // Local archival never invents a server completion/release.
+  serverTerminalConfirmed: boolean;
+  operations: Record<string, Operation>;
+}
+export interface Handoff {
+  targetDay: string;
+  reason: string;
+  attempts: number;
+  nextCheckAt: number;
+  needsHuman: boolean;
+}
 export interface AccountJournal {
   version: 1;
   day?: string;
+  target?: ReservationTarget;
+  archives: ArchivedLifecycle[];
+  handoff?: Handoff;
+  pendingRun?: { day: string; submitAt?: number };
   snapshot?: Snapshot;
   nextPollAt: number;
   pollFailures: number;
@@ -18,7 +39,7 @@ export interface AccountJournal {
   rebookCounts: Record<string, number>;
 }
 export function emptyJournal(): AccountJournal {
-  return { version: 1, nextPollAt: 0, pollFailures: 0, reviewPending: false, events: [], operations: {}, rebookCounts: {} };
+  return { version: 1, archives: [], nextPollAt: 0, pollFailures: 0, reviewPending: false, events: [], operations: {}, rebookCounts: {} };
 }
 export interface JournalStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -34,6 +55,12 @@ export class SerialJournal {
     this.tail = result.catch(() => undefined);
     return result;
   }
-  async load(): Promise<AccountJournal> { return await this.storage.get<AccountJournal>("account-v1") ?? emptyJournal(); }
+  async load(): Promise<AccountJournal> {
+    const state = await this.storage.get<AccountJournal>("account-v1");
+    if (!state) return emptyJournal();
+    if (state.version !== 1 || !state.operations || !Array.isArray(state.events)) throw new Error("JOURNAL_SCHEMA_REQUIRES_REVIEW");
+    // Additive migration preserves every existing operation and review latch in account-v1.
+    return { ...state, archives: state.archives ?? [] };
+  }
   async save(state: AccountJournal): Promise<void> { await this.storage.put("account-v1", state); }
 }

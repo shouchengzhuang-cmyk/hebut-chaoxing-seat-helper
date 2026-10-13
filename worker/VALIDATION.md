@@ -1,46 +1,62 @@
-# Validation and delivery record
+# Validation and delivery record — follow-up review
 
-Base: 71401d3998d404f96dd4bf21b22ba1949253f2e9 (main observed 2026-10-13).
-Reference: qvoo/iSeatcx 0e91538b46b523b3e1d859b9baf9615d42c41d5f.
-Environment: Node24.19.0, TypeScript5.9.3, Wrangler4.135.0, Miniflare5.20260918.0-alpha.
+Date: 2026-10-13. Reviewed existing Draft PR #1, branch feat/worker-seat-lifecycle-20261013, parent f1655d2c981edf6f8499d1ca27be9048eccbeebe. This is a follow-up on that branch, not a new PR.
 
-## Checks actually executed
+## Independent baseline checks
+
+Before this round's edits, reran the original userscript build and 51 tests, Workers typecheck and 81 tests, Wrangler offline build and 2 workerd integration tests. All passed. The original source nevertheless had a date gate that blocked nonterminal old SIGNED_IN/UNKNOWN snapshots.
+
+## Final checks actually executed
 
 | Check | Result |
 | --- | --- |
-| Root npm run check (userscript build + tests) | 51 passed, 0 failed |
-| Worker npm run typecheck | Passed |
-| Worker npm test | 81 passed, 0 failed |
-| Wrangler deploy --dry-run | Passed, 36.92KiB bundle / 10.87KiB gzip |
-| workerd / Miniflare runtime tests | 2 passed, 0 failed |
+| Root npm run check: userscript build + Node tests | 70 passed, 0 failed |
+| Workers npm run typecheck | Passed |
+| Workers npm test | 112 passed, 0 failed |
+| Wrangler deploy --dry-run | Passed, 46.39KiB bundle / 12.92KiB gzip |
+| workerd / Miniflare + SQLite DO integration tests | 4 passed, 0 failed |
+| Node syntax checks: generated userscript and contract CLI | Passed |
 | git diff --check | Passed |
 
-Worker baseline was 11 tests. This change adds 70 Node unit tests and 2 runtime tests: 72 new tests, all passed. Total across both existing projects and new runtime tests: 134 passed, 0 failed. The previous 9 scratch audit tests were not part of the repository baseline and are not added to this total; their risk cases are incorporated in the new suite.
+This round adds 52 tests: 19 userscript/diagnostic tests, 31 Workers unit tests, 2 workerd integration tests. Final total: 186 passed, 0 failed. Previous scratch audit tests are not double counted. No known failing checks remain.
 
-Earlier development failures (Node strip-only parameter properties, mismatched generation in a synthetic test configuration, and Miniflare5 mock API differences) were corrected. No known failing tests remain. Integration tests run real workerd and SQLite DO but intercept all school requests, including the single synthetic submit.
+A development-only failure in the restart harness exposed Miniflare5 ignoring the V4 durableObjectsPersist setting; the harness now uses the native resourcePersistencePath. Restart assertions now test actual persisted SQLite files across disposed/new workerd runtimes, not just an in-memory replacement coordinator. All school requests in these tests are intercepted locally, never sent to the real school.
 
-## Implemented and verified scope
+## Problems fixed
 
-- Persistent submission intent before transport, strict confirmation, no resend after uncertain write, recovery after restart/result-save failure, explicit rejection retry bounds.
-- Serial queue shared by HTTP and Cron. Eight concurrent unit calls and four real runtime HTTP calls each produced one mock submit.
-- Read-only index/getstatus compatibility layers, strict identity/time matching, unverified codes stay UNKNOWN, known-id absence does not imply release.
-- Bounded transition events, review latch, verified clearance only, signed-in result observation, completed polling stop, interval/error backoff.
-- Finite normal rebooking after explicit release plus positive server eligibility, free-seat and no-supervision evidence. Fresh read before write, per-event attempt limit and two-event daily budget.
-- Official on-site entry URL, authenticated cached status and monitoring/track routes. No sign/signback/cancel/reset endpoints.
-- One SQLite DO, no KV or D1, feature gates disabled by default, no passwords or tokens stored in journal.
+- Expired local tasks no longer block a future date merely because their snapshot is SIGNED_IN or UNKNOWN. Refresh old state, resolve pending write intentions, preserve a 30-entry archive and switch dates within the same serial queue. Archival records the old state and separately marks whether the server actually confirmed terminal state.
+- A historical SUBMITTED_UNVERIFIED write is never erased or accepted from time/absence. Unconfirmed history or known supervision produces handoff reason, needsHuman, event and bounded read backoff. Pending authorized runs can resume on positive confirmation; stale Cron intent cannot run indefinitely.
+- Legacy account-v1 journal fields migrate additively; unsupported versions fail closed with an explicit review error. DO ID and SQLite migration tag are unchanged. Restart/concurrent calls preserve idempotency.
+- A lost rebooking response cannot be confirmed by the same previously released reservation ID. It must have a distinct matching record or explicit successful submit response.
+- Backward date requests cannot poison the active task's pending run.
+- Cron target date derives from scheduledTime, not delayed wall-clock date. Short delays can proceed; delays more than 15 minutes past22:30 record a missed-window event with zero school calls. Deadline and reservation start are rechecked immediately before a write.
+- 08:30–22:00 stays unchanged. New independent checkin offsets default30/30; /status displays08:00–09:00, Shanghai timezone and advisory phase. Window boundaries/midnight/year changes are tested. A local AFTER_WINDOW phase never changes server state or implies release.
 
-## Only mock-validated / still unconfirmed
+## Diagnostic functionality and privacy
 
-All school behavior is synthetic. No HEBUT response fixture exists. School code meanings, index/getstatus response shape (especially data.seatReserve in getstatus), permission field paths, timestamp/date conventions, precise seat formatting, additional submit fields, cookie lifetime, site-specific request requirements, Worker-to-school reachability and platform CPU consumption remain unverified.
+New default-disabled userscript component observes only exact same-origin index/getstatus paths and ordinary GET/POST read requests. It never calls an endpoint itself or reads request bodies/headers. Existing appointment engine behavior is unchanged; new hall/code matches mount diagnostics only.
 
-No school submit/sign/release action, Cloudflare deployment, merge, or online resource provisioning occurred. Signing algorithm is preserved from the original Worker; only endpoint and school index parameters were adapted from iSeatcx. Automatic captcha, remote sign/reset and password login are excluded.
+Whitelist projection removes names/UID/secrets/free-text statuses and arbitrary fields. Appointment/room/seat IDs are aliased, absolute dates shifted with relative offsets preserved. Necessary numerical status/time/boolean structure remains. Samples stay in memory, max10; arrays max100. Stop clears sanitized samples and pasted raw text. Export uses user-triggered preview, separate confirmation and a local JSON download; no upload or durable sample storage. Manual Response-JSON paste is the safe fallback for late-loaded hooks/inaccessible frames. Old downloadDiagnose now opens this preview rather than exporting logs directly.
 
-Conservative limitations: single tracked date/target; current lifecycle cannot be overwritten by another date; rebooking stops once the original start time has passed rather than inventing remaining-time rules; absent verified permission fields keeps rebooking disabled; unresolved submissions have no force-reset endpoint. Do not erase the DO journal to bypass uncertainty.
+Unit tests exercise fetch/XHR pass-through, both API generations, denied write paths/cross-origin/methods, callback suppression after disable, later extension hook preservation, alias consistency, date/timestamp replacement, preview/cancel/confirm and manual import controls. Actual browser/school page integration remains untested; fake DOM is used for UI behavior tests.
 
-## Minimal next manual checks
+## School protocol remains pending
 
-1. Use the official school page normally; provide the current hall/reservation URL and redacted index/getstatus responses for available states. Remove Cookie/token/enc/UID/personal data. Do not manufacture supervision events.
-2. Configure verified code/field profiles from that evidence; keep writes off while checking track/status/monitor. Confirm school rebooking and time-slot rules; if there is no affirmative server eligibility evidence, keep automatic rebooking off.
-3. At the library, open the official arrival URL, complete the normal physical scan and verification, then check the next snapshot becomes SIGNED_IN.
+No actual HEBUT fixture has been supplied. Synthetic fixtures never become school evidence. Verified profile responsePaths allow alternative current/near/detail paths under data, including data-as-record getstatus; unmatched fields stay UNKNOWN. Numeric status meanings, response layouts, cookie lifetime, submit extras, eligibility field meanings, timestamp conventions and Worker reachability/CPU remain unverified.
 
-Deployment and live writes require later explicit confirmation. README documents configuration, routes, free-tier assumptions and source attribution.
+Offline check-contract CLI consumes only the anonymized diagnostic format and a reviewed local profile, prints parser state/reason, and always reports productionCompatibilityConfirmed=false. Unknown states/HTTP failures/absence do not prove release. Real samples belong in gitignored private-diagnostics/, not PR or commits. See test/contracts/README.md.
+
+## Limits intentionally retained
+
+- Rebooking after original START_TIME still stops; the30-minute late checkin allowance does not validate remaining-time rebooking rules.
+- At most one date is actively coordinated, with bounded local archives; no parallel multi-day task system.
+- Known pending supervision or unresolved historical writes may still deliberately block a next-day submission, with explicit operator-facing reason. No force-reset endpoint.
+- Hook capture is opt-in and may miss initial page-load or iframe responses; use the local manual paste fallback. Free-text status strings are omitted for privacy and need manual interpretation.
+- The UI has been tested with fake DOM, not on the live official page.
+- No sign/reset/exit/cancel behavior, school real writes, merge, Cloudflare deployment or resource provisioning occurred.
+
+## Cost and manual follow-up
+
+Rechecked Cloudflare's official pricing/Cron documentation. Same one SQLite DO and two Cron patterns; no KV, D1, Go, Vue or extra service. Standard monitoring at most1440 ticks/day; missing known ID can add a detail read, handoff verification adds bounded historical reads with1/2/4/8/15-minute backoff. DO network wait counts wall-clock duration. A single128MB DO continuously active24h estimates10800GB-s/day versus13000 free; this is a conservative deployment-only estimate, not actual account usage. Request/storage/CPU and other account usage still need observation after an approved deployment.
+
+Minimum user actions: install the branch userscript, opt in on an official page and perform an ordinary read-only action; preview/download anonymized JSON and tell us which official state it displayed. If capture misses, paste only Network Response JSON into the local fallback. Keep credentials/HAR/private samples out of Git. Then configure and offline-check the reviewed status/path profile with writes off. At the library use the official scan flow normally and verify a readback SIGNED_IN snapshot after future deployment approval.

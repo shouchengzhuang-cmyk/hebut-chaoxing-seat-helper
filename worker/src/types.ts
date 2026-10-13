@@ -6,6 +6,8 @@ export interface Env {
   SEAT_NUM?: string;
   START_TIME?: string;
   END_TIME?: string;
+  CHECKIN_EARLY_MINUTES?: string;
+  CHECKIN_LATE_MINUTES?: string;
   SEAT_ACCOUNT?: DurableObjectNamespace;
   WRITES_ENABLED?: string;
   MONITOR_ENABLED?: string;

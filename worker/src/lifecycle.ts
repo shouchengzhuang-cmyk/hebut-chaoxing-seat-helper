@@ -3,6 +3,7 @@ import { prepareReservation, submitOnce, type ReservationDependencies } from "./
 import { targetFromEnv, validDay } from "./seat-api.ts";
 import { queryStatus, type Snapshot } from "./status.ts";
 import { safeLog } from "./safe-log.ts";
+import { checkinWindow, reservationEnd, type CheckinWindow } from "./checkin-window.ts";
 import { getTomorrowInShanghai } from "./time.ts";
 import type { Env, RunResult } from "./types.ts";
 
@@ -29,8 +30,10 @@ export class LifecycleCoordinator {
   private transition(state: AccountJournal, snapshot: Snapshot, day: string): void {
     const previous = state.snapshot;
     if (state.day === day && previous?.record && !snapshot.record && snapshot.state === "UNKNOWN") snapshot = { ...snapshot, record: previous.record };
-    state.snapshot = snapshot; state.day = day;
-    if (snapshot.state === "REVIEW_REQUIRED") {
+    state.snapshot = snapshot;
+    if (state.day !== day || !state.target) state.target = targetFromEnv(this.env);
+    state.day = day;
+    if (snapshot.state === "REVIEW_REQUIRED" || snapshot.policy?.supervisionPending === true) {
       if (!state.reviewPending) {
         const at = nowOf(this.deps), id = `review:${snapshot.record?.id ?? day}:${at}`;
         state.events.push({ id, kind: "REVIEW_REQUIRED", at });
@@ -54,11 +57,101 @@ export class LifecycleCoordinator {
     if (this.env.WRITES_ENABLED !== "true") return { kind: "WRITES_DISABLED", message: "WRITES_DISABLED" };
     return this.journal.exclusive(async () => {
       const state = await this.journal.load();
-      // Do not allow an initial run to reset a released/review/unresolved generation on the same day.
-      if (state.day && state.day !== day && state.snapshot?.state !== "COMPLETED" && state.snapshot?.state !== "UNRESERVED") return failure("LIFECYCLE_BLOCKED", day, "CURRENT_LIFECYCLE_ACTIVE");
+      if (state.day && day < state.day) return failure("LIFECYCLE_BLOCKED", day, "BACKWARD_DAY_CHANGE_DENIED");
+      if (state.day && state.day !== day) {
+        state.pendingRun = { day, submitAt };
+        await this.journal.save(state);
+        const blocked = await this.prepareDayLocked(state, day);
+        if (blocked) return failure("LIFECYCLE_BLOCKED", day, blocked);
+        state.pendingRun = undefined;
+        await this.journal.save(state);
+      }
       if (state.reviewPending) return failure("LIFECYCLE_BLOCKED", day, "REVIEW_PENDING");
       if (state.day === day && ["RELEASED", "COMPLETED"].includes(state.snapshot?.state ?? "")) return failure("LIFECYCLE_BLOCKED", day, "USE_LIFECYCLE_POLICY");
       return this.reserveLocked(state, day, "initial", submitAt);
+    });
+  }
+
+  private async blockHandoff(state: AccountJournal, day: string, reason: string): Promise<string> {
+    const previous = state.handoff;
+    const attempts = previous?.targetDay === day && previous.reason === reason ? previous.attempts + 1 : 1;
+    const now = nowOf(this.deps);
+    state.handoff = { targetDay: day, reason, attempts, nextCheckAt: now + Math.min(900000, 60000 * 2 ** Math.min(attempts - 1, 4)),
+      needsHuman: reason !== "OLD_INTERVAL_ACTIVE" };
+    const id = `handoff:${state.day ?? "none"}:${day}:${reason}`;
+    if (!state.events.some(event => event.id === id)) state.events.push({ id, kind: reason, at: now });
+    state.events = state.events.slice(-50);
+    safeLog("DAY_HANDOFF_BLOCKED", { day, reason, needsHuman: state.handoff.needsHuman });
+    await this.journal.save(state);
+    return reason;
+  }
+
+  private operationContext(key: string): { day: string; target: ReturnType<typeof targetFromEnv> } | undefined {
+    const [day, roomId, seatNum, startTime, endTime, generation, extra] = key.split("|");
+    if (!validDay(day) || !generation || extra !== undefined) return;
+    try { return { day, target: targetFromEnv({ ...this.env, ROOM_ID: roomId, SEAT_NUM: seatNum, START_TIME: startTime, END_TIME: endTime }) }; } catch { return; }
+  }
+
+  private resolveOperations(state: AccountJournal, snapshot: Snapshot, day: string, target = targetFromEnv(this.env)): void {
+    if (!snapshot.record || snapshot.state === "UNKNOWN" || snapshot.state === "UNRESERVED") return;
+    const expected = [day, target.roomId, target.seatNum, target.startTime, target.endTime].join("|") + "|";
+    for (const [key, op] of Object.entries(state.operations)) {
+      if (key.startsWith(expected) && op.phase === "SUBMITTED_UNVERIFIED" && (!key.split("|")[5]?.startsWith("released:") || snapshot.record.id !== key.split("|")[5].slice(9))) {
+        op.phase = "CONFIRMED";
+        op.result = active(snapshot) ? { kind: "ALREADY_RESERVED", targetDay: day, ...target, reserveId: snapshot.record.id }
+          : failure("LIFECYCLE_BLOCKED", day, "TERMINAL_OR_REVIEW_RECORD_CONFIRMED");
+      }
+    }
+  }
+
+  // Archive a local task separately from server state. Time alone never means release or completion.
+  private async prepareDayLocked(state: AccountJournal, day: string): Promise<string | undefined> {
+    if (!state.day || state.day === day) return;
+    if (day < state.day) return this.blockHandoff(state, day, "BACKWARD_DAY_CHANGE_DENIED");
+    const now = nowOf(this.deps);
+    const oldDay = state.day, oldTarget = state.target ?? (state.snapshot?.record ? { roomId: state.snapshot.record.roomId, seatNum: state.snapshot.record.seatNum, startTime: state.snapshot.record.startTime, endTime: state.snapshot.record.endTime } : targetFromEnv(this.env));
+    if (state.handoff?.targetDay === day && now < state.handoff.nextCheckAt && !(state.handoff.reason === "OLD_INTERVAL_ACTIVE" && now >= reservationEnd(oldDay, oldTarget))) return state.handoff.reason;
+    if (now < reservationEnd(oldDay, oldTarget) && !["COMPLETED", "RELEASED", "UNRESERVED"].includes(state.snapshot?.state ?? "")) {
+      return this.blockHandoff(state, day, "OLD_INTERVAL_ACTIVE");
+    }
+    const observed = await queryStatus(this.env, oldTarget, oldDay, this.deps, state.snapshot?.record?.id);
+    this.transition(state, observed, oldDay);
+    this.resolveOperations(state, observed, oldDay, oldTarget);
+    const unresolved = Object.entries(state.operations).filter(([, op]) => op.phase === "SUBMITTED_UNVERIFIED");
+    if (unresolved.length > 5) return this.blockHandoff(state, day, "HISTORY_SUBMISSION_REQUIRES_REVIEW");
+    for (const [key, op] of unresolved) {
+      const context = this.operationContext(key);
+      if (!context) return this.blockHandoff(state, day, "HISTORY_JOURNAL_REQUIRES_REVIEW");
+      // Reuse the historical observation when it belongs to this exact operation target.
+      const same = context.day === oldDay && JSON.stringify(context.target) === JSON.stringify(oldTarget);
+      if (!same) {
+        const checked = await queryStatus(this.env, context.target, context.day, this.deps);
+        this.resolveOperations(state, checked, context.day, context.target);
+        if (checked.state === "REVIEW_REQUIRED" || checked.policy?.supervisionPending === true) state.reviewPending = true;
+      }
+      if (op.phase === "SUBMITTED_UNVERIFIED") return this.blockHandoff(state, day, "HISTORY_SUBMISSION_UNVERIFIED");
+    }
+    if (state.reviewPending || observed.policy?.blacklisted || observed.policy?.supervisionPending) return this.blockHandoff(state, day, "HISTORY_REVIEW_PENDING");
+    const terminal = observed.state === "COMPLETED" || observed.state === "RELEASED";
+    if (!terminal && now < reservationEnd(oldDay, oldTarget) && observed.state !== "UNRESERVED") return this.blockHandoff(state, day, "OLD_INTERVAL_ACTIVE");
+    const operations = Object.fromEntries(Object.entries(state.operations).filter(([key]) => key.startsWith(oldDay + "|")));
+    state.archives.push({ day: oldDay, target: oldTarget, snapshot: state.snapshot, archivedAt: now, reason: terminal ? "SERVER_TERMINAL" : "LOCAL_TASK_INTERVAL_ENDED", serverTerminalConfirmed: terminal, operations });
+    state.archives = state.archives.slice(-30);
+    if (observed.state === "UNKNOWN") {
+      state.events.push({ id: `history-unknown:${oldDay}`, kind: "HISTORY_STATUS_UNVERIFIED", at: now });
+      state.events = state.events.slice(-50);
+    }
+    safeLog("DAY_ARCHIVED", { day: oldDay, nextDay: day, serverTerminalConfirmed: terminal });
+    state.day = day; state.target = targetFromEnv(this.env); state.snapshot = undefined;
+    state.nextPollAt = 0; state.pollFailures = 0; state.handoff = undefined;
+    await this.journal.save(state);
+  }
+
+  async scheduleMissed(day: string): Promise<AccountJournal> {
+    return this.journal.exclusive(async () => {
+      const state = await this.journal.load();
+      if (validDay(day)) await this.blockHandoff(state, day, "CRON_SUBMISSION_WINDOW_MISSED");
+      return state;
     });
   }
 
@@ -92,6 +185,11 @@ export class LifecycleCoordinator {
     try { prepared = await prepareReservation(this.env, this.deps, day); }
     catch { return failure("RESERVATION_FAILED", day, "PREPARE_FAILED"); }
     if (submitAt && submitAt > nowOf(this.deps)) await (this.deps.wait ?? (ms => scheduler.wait(ms)))(submitAt - nowOf(this.deps));
+    if (submitAt !== undefined && nowOf(this.deps) > submitAt + 15 * 60000) {
+      await this.blockHandoff(state, day, "CRON_SUBMISSION_WINDOW_MISSED");
+      return failure("LIFECYCLE_BLOCKED", day, "CRON_SUBMISSION_WINDOW_MISSED");
+    }
+    if (!isFuture(this.env, day, nowOf(this.deps))) return failure("LIFECYCLE_BLOCKED", day, "START_TIME_PASSED");
     op.phase = "SUBMITTED_UNVERIFIED"; op.attempts += 1;
     op.result = failure("SUBMITTED_UNVERIFIED", day, "SUBMISSION_INTENT_SAVED");
     await this.journal.save(state); // Persist before sending any write.
@@ -129,6 +227,19 @@ export class LifecycleCoordinator {
   async tick(force = false): Promise<{ skipped?: string; state: AccountJournal; result?: RunResult }> {
     return this.journal.exclusive(async () => {
       const state = await this.journal.load(), now = nowOf(this.deps);
+      if (state.pendingRun && this.env.WRITES_ENABLED === "true") {
+        const pending = state.pendingRun;
+        if (pending.submitAt !== undefined && now > pending.submitAt + 15 * 60000) {
+          state.pendingRun = undefined;
+          await this.blockHandoff(state, pending.day, "CRON_SUBMISSION_WINDOW_MISSED");
+          return { skipped: "CRON_SUBMISSION_WINDOW_MISSED", state };
+        }
+        const blocked = await this.prepareDayLocked(state, pending.day);
+        if (blocked) return { skipped: blocked, state };
+        state.pendingRun = undefined;
+        await this.journal.save(state);
+        return { state, result: await this.reserveLocked(state, pending.day, "initial", pending.submitAt) };
+      }
       if (!state.day) return { skipped: "NO_TRACKED_RESERVATION", state };
       if (!force && now < state.nextPollAt) return { skipped: "POLL_BACKOFF", state };
       if (!force && state.snapshot?.state === "COMPLETED") return { skipped: "COMPLETED", state };
@@ -138,16 +249,8 @@ export class LifecycleCoordinator {
       state.pollFailures = snapshot.state === "UNKNOWN" ? state.pollFailures + 1 : 0;
       state.nextPollAt = now + Math.min(900_000, pollInterval(this.env) * 2 ** Math.min(state.pollFailures, 4));
       await this.journal.save(state);
-      // A verified explicit terminal record also resolves a lost submission, without claiming active use.
-      if (snapshot.record && snapshot.state !== "UNKNOWN" && snapshot.state !== "UNRESERVED") {
-        for (const [key, op] of Object.entries(state.operations)) {
-          if (key.startsWith(keyFor(this.env, state.day).replace(/\|initial$/, "|")) && op.phase === "SUBMITTED_UNVERIFIED") {
-            op.phase = "CONFIRMED";
-            op.result = active(snapshot) ? confirmed(this.env, state.day, snapshot.record.id) : failure("LIFECYCLE_BLOCKED", state.day, "TERMINAL_OR_REVIEW_RECORD_CONFIRMED");
-          }
-        }
-        await this.journal.save(state);
-      }
+      this.resolveOperations(state, snapshot, state.day);
+      await this.journal.save(state);
       const generation = snapshot.record ? `released:${snapshot.record.id}` : "";
       const operation = generation ? state.operations[keyFor(this.env, state.day, generation)] : undefined;
       if (this.canRebook(state, snapshot, now, !operation) && (!operation || operation.phase === "REJECTED" && operation.attempts < MAX_ATTEMPTS && now >= operation.nextAttemptAt)) {
@@ -168,7 +271,10 @@ export class LifecycleCoordinator {
     return this.journal.exclusive(async () => {
       const state = await this.journal.load();
       if (!validDay(day)) return { state, skipped: "INVALID_TARGET_DAY" };
-      if (state.day && state.day !== day && (state.reviewPending || state.snapshot?.state !== "COMPLETED" && state.snapshot?.state !== "UNRESERVED" || Object.values(state.operations).some(op => op.phase === "SUBMITTED_UNVERIFIED"))) return { state, skipped: "UNRESOLVED_ACCOUNT_STATE" };
+      if (state.day && state.day !== day) {
+        const blocked = await this.prepareDayLocked(state, day);
+        if (blocked) return { state, skipped: "UNRESOLVED_ACCOUNT_STATE" };
+      }
       if (state.day === day && nowOf(this.deps) < state.nextPollAt) return { state, skipped: "POLL_BACKOFF" };
       const snapshot = await queryStatus(this.env, targetFromEnv(this.env), day, this.deps, state.day === day ? state.snapshot?.record?.id : undefined);
       this.transition(state, snapshot, day);
@@ -177,5 +283,12 @@ export class LifecycleCoordinator {
       return { state };
     });
   }
-  async inspect(): Promise<AccountJournal> { return this.journal.exclusive(() => this.journal.load()); }
+  async inspect(): Promise<AccountJournal & { checkinWindow?: CheckinWindow; checkinWindowError?: string }> {
+    return this.journal.exclusive(async () => {
+      const state = await this.journal.load();
+      if (!state.day) return state;
+      try { return { ...state, checkinWindow: checkinWindow(this.env, state.day, nowOf(this.deps), state.target) }; }
+      catch { return { ...state, checkinWindowError: "INVALID_CHECKIN_CONFIGURATION" }; }
+    });
+  }
 }

@@ -5,14 +5,19 @@ import { dirname, join } from 'node:path';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceOrder = [
   'state-machine.js', 'logger.js', 'storage.js', 'clock.js', 'page-adapter.js', 'target-day-frame-loader.js',
-  'submit-observer.js', 'scheduler.js', 'core.js', 'daily-controller.js', 'ui.js', 'userscript.js'
+  'submit-observer.js', 'diagnostics.js', 'scheduler.js', 'core.js', 'daily-controller.js', 'ui.js', 'userscript.js'
 ];
 const metadata = `// ==UserScript==
 // @name         HEBUT Chaoxing Seat Helper
 // @namespace    hebut-chaoxing-seat-helper
-// @version      1.1.0
+// @version      1.2.0
 // @description  河北工业大学超星图书馆座位预约助手
 // @match        https://office.chaoxing.com/front/third/apps/seat/select*
+// @match        https://office.chaoxing.com/front/third/apps/seat/index*
+// @match        https://office.chaoxing.com/front/third/apps/seat/code*
+// @match        https://office.chaoxing.com/front/apps/seatengine/index*
+// @match        https://office.chaoxing.com/front/apps/seatengine/select*
+// @match        https://office.chaoxing.com/front/apps/seatengine/code*
 // @run-at       document-idle
 // @grant        none
 // @noframes

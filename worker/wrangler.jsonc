@@ -17,6 +17,8 @@
     "STATUS_PROFILE_VERIFIED": "false",
     "API_STYLE": "seat",
     "POLL_SECONDS": "60",
+    "CHECKIN_EARLY_MINUTES": "30",
+    "CHECKIN_LATE_MINUTES": "30",
     "ROOM_ID": "3747",
     "SEAT_NUM": "216",
     "START_TIME": "08:30",

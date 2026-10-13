@@ -15,6 +15,7 @@ export class SeatAccount {
     switch (input.action) {
       case "run": result = await this.coordinator.run(input.commit === true, input.day, input.submitAt); break;
       case "monitor": result = await this.coordinator.tick(); break;
+      case "schedule-missed": result = await this.coordinator.scheduleMissed(input.day ?? ""); break;
       case "track": result = await this.coordinator.track(input.day ?? ""); break;
       case "inspect": result = await this.coordinator.inspect(); break;
       default: return Response.json({ error: "INVALID_ACTION" }, { status: 400 });
