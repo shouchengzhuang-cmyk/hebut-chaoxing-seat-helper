@@ -1,9 +1,13 @@
 import type { RunResult, ReservationTarget } from "./types.ts";
 import type { Snapshot } from "./status.ts";
+export type AuthorizationSource = "MANUAL" | "CRON" | "REBOOK";
 export interface Operation {
   phase: "READY" | "SUBMITTED_UNVERIFIED" | "CONFIRMED" | "REJECTED";
   attempts: number;
   nextAttemptAt: number;
+  // Retain the original Cron authorization across retries and restarts.
+  submitAt?: number;
+  authorizationSource?: AuthorizationSource;
   result?: RunResult;
 }
 export interface ArchivedLifecycle {
@@ -29,7 +33,7 @@ export interface AccountJournal {
   target?: ReservationTarget;
   archives: ArchivedLifecycle[];
   handoff?: Handoff;
-  pendingRun?: { day: string; submitAt?: number };
+  pendingRun?: { day: string; submitAt?: number; authorizationSource?: AuthorizationSource };
   snapshot?: Snapshot;
   nextPollAt: number;
   pollFailures: number;

@@ -94,6 +94,27 @@ test("expired scheduled authorization is checked again immediately before submit
   const submitAt=h.deps.now().getTime()-14*60000;
   assert.equal((await h.c.run(true,day,submitAt)).kind,"LIFECYCLE_BLOCKED");assert.equal(h.writes().length,0);
 });
+test("Cron retry retains its deadline across coordinator restart", async () => {
+  const h = harness([index(), page, { success: false, msg: "繁忙" }, index(), index(), page, { success: true, data: { seatReserve: record } }]);
+  const submitAt = h.deps.now().getTime();
+  assert.equal((await h.c.run(true, day, submitAt)).kind, "RESERVATION_FAILED");
+  h.advance(16 * 60000);
+  const restored = new LifecycleCoordinator(h.config, new SerialJournal(h.storage), h.deps);
+  const retry = await restored.tick();
+  assert.equal(h.writes().length, 1);
+  assert.equal(retry.result?.kind, "LIFECYCLE_BLOCKED");
+  assert.equal((await restored.inspect()).handoff?.reason, "CRON_SUBMISSION_WINDOW_MISSED");
+});
+test("Cron retry still succeeds at the inclusive authorization deadline", async () => {
+  const h = harness([index(), page, { success: false, msg: "繁忙" }, index(), index(), page, { success: true, data: { seatReserve: record } }]);
+  const submitAt = h.deps.now().getTime();
+  await h.c.run(true, day, submitAt);
+  h.advance(15 * 60000);
+  const restored = new LifecycleCoordinator(h.config, new SerialJournal(h.storage), h.deps);
+  assert.equal((await restored.tick()).result?.kind, "RESERVATION_SUCCESS");
+  assert.equal(h.writes().length, 2);
+  assert.equal(Object.values((await restored.inspect()).operations)[0].submitAt, submitAt);
+});
 test("unsupported journal version fails closed without overwriting stored data",async()=>{
   const h=harness([]);h.storage.data.set("account-v1",{version:2,operations:{},events:[]});
   await assert.rejects(h.c.inspect(),/JOURNAL_SCHEMA_REQUIRES_REVIEW/);assert.equal((h.storage.data.get("account-v1") as any).version,2);assert.equal(h.calls.length,0);

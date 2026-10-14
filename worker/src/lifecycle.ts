@@ -1,4 +1,4 @@
-import { SerialJournal, type AccountJournal, type Operation } from "./journal.ts";
+import { SerialJournal, type AccountJournal, type Operation, type AuthorizationSource } from "./journal.ts";
 import { prepareReservation, submitOnce, type ReservationDependencies } from "./reservation.ts";
 import { targetFromEnv, validDay } from "./seat-api.ts";
 import { queryStatus, type Snapshot } from "./status.ts";
@@ -20,6 +20,13 @@ function pollInterval(env: Env): number {
   const seconds = Number(env.POLL_SECONDS ?? 60); return Math.max(60, Math.min(900, Number.isFinite(seconds) ? seconds : 60)) * 1000;
 }
 function isFuture(env: Env, day: string, now: number): boolean { return Date.parse(`${day}T${targetFromEnv(env).startTime}:00+08:00`) > now; }
+function authorizationReason(intent: { submitAt?: number; authorizationSource?: AuthorizationSource }): string | undefined {
+  // A persisted finite time from the previous version is affirmative Cron evidence.
+  if (!intent.authorizationSource && Number.isFinite(intent.submitAt)) intent.authorizationSource = "CRON";
+  if (intent.authorizationSource === "CRON" && Number.isFinite(intent.submitAt)) return;
+  if ((intent.authorizationSource === "MANUAL" || intent.authorizationSource === "REBOOK") && intent.submitAt === undefined) return;
+  return "AUTHORIZATION_EVIDENCE_REQUIRED";
+}
 
 export class LifecycleCoordinator {
   private readonly env: Env;
@@ -58,9 +65,27 @@ export class LifecycleCoordinator {
     return this.journal.exclusive(async () => {
       const state = await this.journal.load();
       if (state.day && day < state.day) return failure("LIFECYCLE_BLOCKED", day, "BACKWARD_DAY_CHANGE_DENIED");
+      let source: AuthorizationSource = submitAt === undefined ? "MANUAL" : "CRON";
+      if (state.pendingRun) {
+        if (state.pendingRun.day !== day) return failure("LIFECYCLE_BLOCKED", day, "PENDING_RUN_TARGET_CONFLICT");
+        const reason = authorizationReason(state.pendingRun);
+        if (reason) {
+          await this.blockHandoff(state, day, reason);
+          return failure("LIFECYCLE_BLOCKED", day, reason);
+        }
+        submitAt = state.pendingRun.submitAt;
+        source = state.pendingRun.authorizationSource!;
+      }
       if (state.day && state.day !== day) {
-        state.pendingRun = { day, submitAt };
+        // Do not replace an existing intent's missing/expired evidence with a new request.
+        if (state.pendingRun?.day !== day) state.pendingRun = { day, submitAt, authorizationSource: submitAt === undefined ? "MANUAL" : "CRON" };
         await this.journal.save(state);
+        const reason = authorizationReason(state.pendingRun!);
+        if (reason) {
+          await this.blockHandoff(state, day, reason);
+          return failure("LIFECYCLE_BLOCKED", day, reason);
+        }
+        submitAt = state.pendingRun!.submitAt;
         const blocked = await this.prepareDayLocked(state, day);
         if (blocked) return failure("LIFECYCLE_BLOCKED", day, blocked);
         state.pendingRun = undefined;
@@ -68,7 +93,7 @@ export class LifecycleCoordinator {
       }
       if (state.reviewPending) return failure("LIFECYCLE_BLOCKED", day, "REVIEW_PENDING");
       if (state.day === day && ["RELEASED", "COMPLETED"].includes(state.snapshot?.state ?? "")) return failure("LIFECYCLE_BLOCKED", day, "USE_LIFECYCLE_POLICY");
-      return this.reserveLocked(state, day, "initial", submitAt);
+      return this.reserveLocked(state, day, "initial", submitAt, source);
     });
   }
 
@@ -155,9 +180,12 @@ export class LifecycleCoordinator {
     });
   }
 
-  private async reserveLocked(state: AccountJournal, day: string, generation: string, submitAt?: number): Promise<RunResult> {
+  private async reserveLocked(state: AccountJournal, day: string, generation: string, submitAt?: number, authorizationSource?: AuthorizationSource): Promise<RunResult> {
     const key = keyFor(this.env, day, generation), now = nowOf(this.deps);
-    const op: Operation = state.operations[key] ?? { phase: "READY", attempts: 0, nextAttemptAt: 0 };
+    const op: Operation = state.operations[key] ?? { phase: "READY", attempts: 0, nextAttemptAt: 0, submitAt, authorizationSource };
+    // Existing intentions keep their evidence, even if a new request supplies fresh authorization.
+    const authorizationError = authorizationReason(op);
+    submitAt = op.submitAt;
     state.operations[key] = op;
     // Retain unresolved writes indefinitely. Prune only old acknowledged outcomes to bound storage.
     for (const oldDay of Object.keys(state.rebookCounts)) if (oldDay < day) delete state.rebookCounts[oldDay];
@@ -180,6 +208,10 @@ export class LifecycleCoordinator {
     if (state.reviewPending || snapshot.state === "UNKNOWN" || snapshot.state === "REVIEW_REQUIRED" || snapshot.policy?.blacklisted || snapshot.policy?.supervisionPending) return failure("LIFECYCLE_BLOCKED", day, "UNVERIFIED_OR_RESTRICTED_STATE");
     if (generation === "initial" && snapshot.state !== "UNRESERVED") return failure("LIFECYCLE_BLOCKED", day, "NOT_UNRESERVED");
     if (generation !== "initial" && !this.canRebook(state, snapshot, now, false)) return failure("LIFECYCLE_BLOCKED", day, "REBOOK_POLICY_DENIED");
+    if (authorizationError) {
+      await this.blockHandoff(state, day, authorizationError);
+      return failure("LIFECYCLE_BLOCKED", day, authorizationError);
+    }
     // A negative read can authorize retry only after an explicit rejected write, never after ambiguity.
     let prepared;
     try { prepared = await prepareReservation(this.env, this.deps, day); }
@@ -229,8 +261,12 @@ export class LifecycleCoordinator {
       const state = await this.journal.load(), now = nowOf(this.deps);
       if (state.pendingRun && this.env.WRITES_ENABLED === "true") {
         const pending = state.pendingRun;
+        const reason = authorizationReason(pending);
+        if (reason) {
+          await this.blockHandoff(state, pending.day, reason);
+          return { skipped: reason, state };
+        }
         if (pending.submitAt !== undefined && now > pending.submitAt + 15 * 60000) {
-          state.pendingRun = undefined;
           await this.blockHandoff(state, pending.day, "CRON_SUBMISSION_WINDOW_MISSED");
           return { skipped: "CRON_SUBMISSION_WINDOW_MISSED", state };
         }
@@ -238,7 +274,7 @@ export class LifecycleCoordinator {
         if (blocked) return { skipped: blocked, state };
         state.pendingRun = undefined;
         await this.journal.save(state);
-        return { state, result: await this.reserveLocked(state, pending.day, "initial", pending.submitAt) };
+        return { state, result: await this.reserveLocked(state, pending.day, "initial", pending.submitAt, pending.authorizationSource) };
       }
       if (!state.day) return { skipped: "NO_TRACKED_RESERVATION", state };
       if (!force && now < state.nextPollAt) return { skipped: "POLL_BACKOFF", state };
@@ -256,7 +292,7 @@ export class LifecycleCoordinator {
       if (this.canRebook(state, snapshot, now, !operation) && (!operation || operation.phase === "REJECTED" && operation.attempts < MAX_ATTEMPTS && now >= operation.nextAttemptAt)) {
         // The same released id can only issue one operation. A new id consumes another daily budget slot.
         if (!operation) { state.rebookCounts[state.day] = (state.rebookCounts[state.day] ?? 0) + 1; await this.journal.save(state); }
-        const result = await this.reserveLocked(state, state.day, generation);
+        const result = await this.reserveLocked(state, state.day, generation, undefined, "REBOOK");
         return { state, result };
       }
       const initial = state.operations[keyFor(this.env, state.day)];
