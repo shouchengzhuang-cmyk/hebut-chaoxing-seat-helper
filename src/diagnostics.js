@@ -16,6 +16,9 @@ function statusValue(value) {
 export class DiagnosticSanitizer {
   constructor() { this.aliases = new Map(); this.dateAnchor = null; }
   alias(kind, value) {
+    // A zero reservation ID is invalid in the runtime parser. Preserve only this
+    // non-identifying sentinel instead of laundering it into a valid alias.
+    if (kind === 'id' && (value === 0 || typeof value === 'string' && /^0+$/.test(value))) return typeof value === 'number' ? 0 : '0';
     if (!(typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 || typeof value === 'string' && /^\d{1,16}$/.test(value))) return undefined;
     let aliases = this.aliases.get(kind); if (!aliases) { aliases = new Map(); this.aliases.set(kind, aliases); }
     const key = String(value); if (!aliases.has(key)) { if (aliases.size >= 2000) return undefined; aliases.set(key, aliases.size + 1); }
