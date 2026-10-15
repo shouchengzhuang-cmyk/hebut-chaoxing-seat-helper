@@ -28,6 +28,8 @@ jobs:
         run: npm ci
       - name: Build and test (offline fixtures)
         run: npm run check
+      - name: Ensure checked-in generated script is up to date
+        run: git diff --exit-code -- dist/hebut-chaoxing-seat-helper.user.js
 
   worker:
     name: Worker types, tests and SQLite integration
