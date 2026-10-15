@@ -1,0 +1,65 @@
+{
+  "runId": "2026-10-15T12-37-27-241Z",
+  "status": "PASS",
+  "browser": "155.0.4283.45",
+  "cases": [
+    {
+      "name": "page-load-and-csp",
+      "status": "PASS"
+    },
+    {
+      "name": "reject-invalid-token-and-connect",
+      "status": "PASS"
+    },
+    {
+      "name": "candidate-order-through-real-buttons",
+      "status": "PASS"
+    },
+    {
+      "name": "time-templates-and-default-selection",
+      "status": "PASS"
+    },
+    {
+      "name": "date-weekdays-pauses-and-dated-override",
+      "status": "PASS"
+    },
+    {
+      "name": "save-plan-without-redeployment",
+      "status": "PASS"
+    },
+    {
+      "name": "refresh-retains-plan-but-forgets-token",
+      "status": "PASS"
+    },
+    {
+      "name": "two-tabs-revision-conflict-keeps-server-winner",
+      "status": "PASS"
+    },
+    {
+      "name": "global-pause-persists-across-refresh-and-resumes",
+      "status": "PASS"
+    },
+    {
+      "name": "read-only-preview-remains-blocked-without-school-evidence",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile-layout-no-horizontal-overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "no-browser-errors-or-school-network",
+      "status": "PASS"
+    }
+  ],
+  "screenshots": [
+    "01-loaded.png",
+    "02-plan-saved.png",
+    "03-version-conflict.png",
+    "04-paused.png",
+    "05-mobile.png"
+  ],
+  "pageErrors": [],
+  "externalRequests": [],
+  "serverOutboundAttempts": 0
+}

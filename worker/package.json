@@ -7,14 +7,24 @@
   "scripts": {
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run typecheck && npm test && npm run test:runtime",
     "dev": "wrangler dev --test-scheduled",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir .build",
+    "test:runtime": "npm run build && node --test test/runtime.test.mjs",
+    "check:contract": "node scripts/check-contract.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260921.1",
-"typescript": "^5.9.2",
-    "wrangler": "^4.38.0"
+    "typescript": "^5.9.2",
+    "wrangler": "^4.38.0",
+    "miniflare": "5.20260918.0-alpha"
+  },
+  "overrides": {
+    "miniflare": {
+      "sharp": "0.35.5",
+      "undici": "7.29.1"
+    }
   },
   "engines": {
     "node": ">=22.6"

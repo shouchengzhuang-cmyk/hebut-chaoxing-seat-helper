@@ -1,3 +1,4 @@
+import { DiagnosticCollector, DiagnosticPanel } from './diagnostics.js';
 import { ChaoxingSeatPageAdapter } from './page-adapter.js';
 import { ServerClock, tomorrowShanghai, weekdayForShanghaiDay } from './clock.js';
 import { OpenScheduler } from './scheduler.js';
@@ -89,14 +90,27 @@ function boot() {
       return report;
     } finally { loader.destroy(); }
   };
-  const api = window.HEBUT_SEAT = { probe: () => engine.probe(), dryRun: () => engine.dryRun(), arm: () => engine.arm(storage.getSettings().mode), disarm: () => { storage.saveSettings({ ...storage.getSettings(), autoArm: false }); dailyController.stop('disarm'); engine.stop('disarm'); }, stop: () => { storage.saveSettings({ ...storage.getSettings(), autoArm: false }); dailyController.stop('manual'); engine.stop('manual'); }, status: () => ({ ...engine.status(), daily: dailyController.status() }), reconcile: () => dailyController.reconcile('manual', { resyncClock: true }), enableNotifications: () => engine.enableNotifications(), downloadLog: () => logger.download(), downloadDiagnose: () => logger.download(`hebut-seat-diagnose-${Date.now()}.json`), config: (value) => { if (value) { storage.saveSettings({ ...storage.getSettings(), ...value }); if (storage.getSettings().autoArm) dailyController.start(); else dailyController.stop('config disabled'); } return storage.getSettings(); }, resetForDate: (day) => engine.resetForDate(day), resetAttemptForDate: (day) => engine.resetAttemptForDate(day), debug: { shadowSubmitProbe: () => createShadowSubmitProbe({ onObserved: (item) => logger.log('info', 'SHADOW_SUBMIT_OBSERVED', engine.machine.state, item) }), testIframeLoader, testTargetDayGate } };
-  panel.mount(); logger.log('info', 'READY', engine.machine.state, { api: 'window.HEBUT_SEAT', settings: storage.getSettings() });
+  const api = window.HEBUT_SEAT = { probe: () => engine.probe(), dryRun: () => engine.dryRun(), arm: () => engine.arm(storage.getSettings().mode), disarm: () => { storage.saveSettings({ ...storage.getSettings(), autoArm: false }); dailyController.stop('disarm'); engine.stop('disarm'); }, stop: () => { storage.saveSettings({ ...storage.getSettings(), autoArm: false }); dailyController.stop('manual'); engine.stop('manual'); }, status: () => ({ ...engine.status(), daily: dailyController.status() }), reconcile: () => dailyController.reconcile('manual', { resyncClock: true }), enableNotifications: () => engine.enableNotifications(), downloadLog: () => logger.download(), config: (value) => { if (value) { engine.updateSettings({ ...storage.getSettings(), ...value }); if (storage.getSettings().autoArm) dailyController.start(); else dailyController.stop('config disabled'); } return storage.getSettings(); }, resetForDate: (day) => engine.resetForDate(day), resetAttemptForDate: (day) => engine.resetAttemptForDate(day), debug: { shadowSubmitProbe: () => createShadowSubmitProbe({ onObserved: (item) => logger.log('info', 'SHADOW_SUBMIT_OBSERVED', engine.machine.state, item) }), testIframeLoader, testTargetDayGate } };
+  panel.mount();
+  const diagnostics = new DiagnosticPanel({ collector: new DiagnosticCollector() });
+  diagnostics.mount(panel.root.querySelector('main'));
+  api.downloadDiagnose = () => diagnostics.showPreview();
+  api.previewReadonlyDiagnostics = () => diagnostics.showPreview();
+  logger.log('info', 'READY', engine.machine.state, { api: 'window.HEBUT_SEAT', settings: storage.getSettings() });
   const settings = storage.getSettings(); (async () => { try { if (settings.autoArm) dailyController.start(); else await engine.resumeIfArmed(); } catch (error) { engine.fail(error); } })();
   return api;
+}
+export function shouldBootDiagnostics(windowRef) {
+  return Boolean(windowRef && windowRef.top === windowRef.self && windowRef.location.hostname === 'office.chaoxing.com'
+    && /^\/front\/(?:third\/apps\/seat|apps\/seatengine)\/(?:index|select|code)$/.test(windowRef.location.pathname));
 }
 function bootTopWindowOnly() {
   // @noframes 失效时仍在运行时阻止 iframe 内 Userscript 启动。
   if (window.top !== window.self) return;
   if (shouldBoot(window)) boot();
+  else if (shouldBootDiagnostics(window) && !window.HEBUT_SEAT_DIAGNOSTICS) {
+    const panel = new DiagnosticPanel({ collector: new DiagnosticCollector() });
+    panel.mount(); window.HEBUT_SEAT_DIAGNOSTICS = { preview: () => panel.showPreview(), disable: () => panel.destroy() };
+  }
 }
 if (typeof window !== 'undefined') bootTopWindowOnly();

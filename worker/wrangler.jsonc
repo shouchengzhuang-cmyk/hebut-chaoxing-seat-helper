@@ -5,9 +5,20 @@
   "workers_dev": true,
   "compatibility_date": "2026-09-21",
   "triggers": {
-    "crons": ["29 14 * * *"]
+    "crons": ["29 14 * * *", "*/1 * * * *"]
   },
+  "durable_objects": { "bindings": [{ "name": "SEAT_ACCOUNT", "class_name": "SeatAccount" }] },
+  "migrations": [{ "tag": "v1-seat-account", "new_sqlite_classes": ["SeatAccount"] }],
   "vars": {
+    "WRITES_ENABLED": "false",
+    "MONITOR_ENABLED": "false",
+    "AUTO_REBOOK_ENABLED": "false",
+    "REBOOK_RULES_VERIFIED": "false",
+    "STATUS_PROFILE_VERIFIED": "false",
+    "API_STYLE": "seat",
+    "POLL_SECONDS": "60",
+    "CHECKIN_EARLY_MINUTES": "30",
+    "CHECKIN_LATE_MINUTES": "30",
     "ROOM_ID": "3747",
     "SEAT_NUM": "216",
     "START_TIME": "08:30",

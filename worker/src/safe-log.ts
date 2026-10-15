@@ -1,4 +1,4 @@
-const SECRET_NAMES = /cookie|authorization|submit_enc|\benc\b|wfw_token|\buid\b|token/i;
+const SECRET_NAMES = /cookie|authorization|submit_enc|\benc\b|wfw_token|\buid\b|token|reserveId|rawStatus/i;
 
 export function sanitizeError(error: unknown): { name: string; message: string; status?: number } {
   const source = error instanceof Error ? error.message : String(error ?? "unknown error");

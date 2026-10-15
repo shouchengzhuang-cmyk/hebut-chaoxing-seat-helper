@@ -1,9 +1,14 @@
 // ==UserScript==
 // @name         HEBUT Chaoxing Seat Helper
 // @namespace    hebut-chaoxing-seat-helper
-// @version      1.1.0
+// @version      1.3.0
 // @description  河北工业大学超星图书馆座位预约助手
 // @match        https://office.chaoxing.com/front/third/apps/seat/select*
+// @match        https://office.chaoxing.com/front/third/apps/seat/index*
+// @match        https://office.chaoxing.com/front/third/apps/seat/code*
+// @match        https://office.chaoxing.com/front/apps/seatengine/index*
+// @match        https://office.chaoxing.com/front/apps/seatengine/select*
+// @match        https://office.chaoxing.com/front/apps/seatengine/code*
 // @run-at       document-idle
 // @grant        none
 // @noframes
@@ -52,12 +57,12 @@ class SeatStateMachine {
 }
 
 
-const SENSITIVE_KEY = /cookie|password|token|captcha|authorization|wyToken|enc|session/i;
+const SENSITIVE_KEY = /cookie|password|token|captcha|authorization|wyToken|enc|session|^uid$|reserveId|rawStatus|^msg$|headers|responseText/i;
 const SENSITIVE_TEXT = /(cookie|password|token|captcha|authorization|wyToken|enc|session)\s*[:=]\s*[^,\s&}]+/gi;
 
 function redact(value) {
   if (value === null || value === undefined) return value;
-  if (typeof value === 'string') return value.replace(SENSITIVE_TEXT, '$1=[REDACTED]');
+  if (typeof value === 'string') return value.replace(/https:\/\/[^\s"'<>]+/g, (text) => { try { const url = new URL(text); return url.origin + url.pathname; } catch { return '[URL]'; } }).replace(SENSITIVE_TEXT, '$1=[REDACTED]');
   if (Array.isArray(value)) return value.map(redact);
   if (typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SENSITIVE_KEY.test(key) ? '[REDACTED]' : redact(item)]));
   return value;
@@ -82,7 +87,7 @@ class EventLogger {
 
 
 const DEFAULT_SETTINGS = Object.freeze({
-  expectedRoomId: '3747', seatPriority: ['216'], startTime: '08:00', endTime: '22:00', fireDelayMs: 100,
+  expectedRoomId: '3747', seatPriority: ['216'], startTime: '08:30', endTime: '22:00', fireDelayMs: 100,
   mode: 'dry-run', retryPolicy: { maxTotalSubmits: 4, gateRetryDelaysMs: [180, 260, 400], targetGateRetryDelaysMs: [0, 180, 260, 400, 650, 900], allowSeatFallback: true },
   autoArm: false, daysOfWeek: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], notifications: true, recoveryGraceMs: 3000
 });
@@ -361,6 +366,211 @@ function createShadowSubmitProbe({ windowRef = window, onObserved = () => {} } =
 }
 
 
+// Local, opt-in read-only diagnostics. Never retains request bodies/headers or exports arbitrary keys.
+const READ_PATH = /^\/data\/apps\/(seat|seatengine)\/(index|getstatus)$/;
+const RECORD_FIELDS = ['id', 'roomId', 'seatNum', 'today', 'day', 'reserveDay', 'startTime', 'endTime', 'status'];
+const BOOLEAN_FIELDS = ['canReserve', 'reviewPending', 'supervisionPending', 'blacklisted', 'seatAvailable', 'isSign', 'signed'];
+function plain(value) { return value && typeof value === 'object' && !Array.isArray(value) ? value : null; }
+function own(value, key) { return plain(value) && Object.hasOwn(value, key) ? value[key] : undefined; }
+function endpointOf(raw, base) {
+  try { const url = new URL(raw, base); const match = READ_PATH.exec(url.pathname); return url.origin === 'https://office.chaoxing.com' && match ? { apiStyle: match[1], endpoint: match[2] } : null; } catch { return null; }
+}
+function validDate(value) { try { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && new Date(value).toISOString().slice(0, 10) === value; } catch { return false; } }
+function statusValue(value) {
+  if (Number.isInteger(value) && Math.abs(value) <= 10000) return value;
+  if (typeof value === 'string' && /^-?\d{1,4}$/.test(value)) return value;
+  return undefined; // Free-text or opaque string status could contain identifiers or tokens.
+}
+class DiagnosticSanitizer {
+  constructor() { this.aliases = new Map(); this.dateAnchor = null; }
+  alias(kind, value) {
+    // A zero reservation ID is invalid in the runtime parser. Preserve only this
+    // non-identifying sentinel instead of laundering it into a valid alias.
+    if (kind === 'id' && (value === 0 || typeof value === 'string' && /^0+$/.test(value))) return typeof value === 'number' ? 0 : '0';
+    if (!(typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 || typeof value === 'string' && /^\d{1,16}$/.test(value))) return undefined;
+    let aliases = this.aliases.get(kind); if (!aliases) { aliases = new Map(); this.aliases.set(kind, aliases); }
+    const key = String(value); if (!aliases.has(key)) { if (aliases.size >= 2000) return undefined; aliases.set(key, aliases.size + 1); }
+    const alias = aliases.get(key);
+    return typeof value === 'number' ? alias : kind === 'seatNum' ? String(alias).padStart(Math.min(value.length, 6), '0') : String(alias);
+  }
+  date(value) {
+    if (!validDate(value)) return undefined;
+    const timestamp = Date.parse(value + 'T00:00:00Z');
+    this.dateAnchor ??= timestamp;
+    return new Date(Date.UTC(2000, 0, 2) + timestamp - this.dateAnchor).toISOString().slice(0, 10);
+  }
+  time(value) {
+    if (typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return value;
+    const numeric = typeof value === 'number' ? value : typeof value === 'string' && /^\d{13}$/.test(value) ? Number(value) : NaN;
+    if (!Number.isSafeInteger(numeric) || numeric < 0 || numeric > 4102444800000) return undefined;
+    const local = new Date(numeric + 8 * 3600000).toISOString();
+    const aliasDay = this.date(local.slice(0, 10));
+    const alias = Date.parse(aliasDay + 'T' + local.slice(11, 23) + '+08:00');
+    return typeof value === 'string' ? String(alias) : alias;
+  }
+  record(raw) {
+    if (!plain(raw)) return null;
+    const output = {};
+    // Dates are processed first so timestamps and today aliases agree.
+    for (const field of RECORD_FIELDS) {
+      const value = own(raw, field); let filtered;
+      if (['id', 'roomId', 'seatNum'].includes(field)) filtered = this.alias(field, value);
+      else if (['today', 'day', 'reserveDay'].includes(field)) filtered = this.date(value);
+      else if (['startTime', 'endTime'].includes(field)) filtered = this.time(value);
+      else filtered = statusValue(value);
+      if (filtered !== undefined) output[field] = filtered;
+      else if (value !== undefined) output[field + 'Type'] = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    }
+    for (const field of BOOLEAN_FIELDS) if (typeof own(raw, field) === 'boolean') output[field] = raw[field];
+    return output;
+  }
+  project(raw, { apiStyle, endpoint, httpStatus = 200 }) {
+    if (!plain(raw) || !['seat', 'seatengine'].includes(apiStyle) || !['index', 'getstatus'].includes(endpoint)) throw new Error('UNSUPPORTED_READONLY_SAMPLE');
+    const body = {}, data = own(raw, 'data');
+    if (typeof own(raw, 'success') === 'boolean') body.success = raw.success;
+    if (typeof own(raw, 'msg') === 'string' || typeof own(raw, 'message') === 'string') {
+      const message = own(raw, 'msg') ?? own(raw, 'message');
+      body.messageClass = /登录|login|session|认证/i.test(message) ? 'AUTH_HINT' : /监督|验证|captcha/i.test(message) ? 'VERIFICATION_HINT' : 'OTHER';
+    }
+    if (plain(data)) {
+      const out = own(data, "id") !== undefined && own(data, "roomId") !== undefined ? this.record(data) : {};
+      for (const field of ['curReserves', 'nearReserves', 'reserves', 'recentReserves']) {
+        const value = own(data, field);
+        if (Array.isArray(value)) { out[field] = value.slice(0, 100).map(item => this.record(item)); if (value.length > 100) out.truncated = true; }
+      }
+      for (const field of ['seatReserve', 'reserve', 'reservation']) if (plain(own(data, field))) out[field] = this.record(data[field]);
+      for (const field of ['status', 'reserveStatus']) if (statusValue(own(data, field)) !== undefined) out[field] = statusValue(data[field]);
+      for (const field of BOOLEAN_FIELDS) if (typeof own(data, field) === 'boolean') out[field] = data[field];
+      if (plain(own(data, 'rules'))) {
+        out.rules = {}; for (const field of BOOLEAN_FIELDS) if (typeof own(data.rules, field) === 'boolean') out.rules[field] = data.rules[field];
+      }
+      if (plain(own(data, 'seatConfig'))) {
+        out.seatConfig = {};
+        for (const field of ['preSignDuration', 'postSignDuration', 'reserveBeforeDay', 'reserveDuration', 'reserveNumLimit']) {
+          const value = own(data.seatConfig, field); if (Number.isInteger(value) && value >= 0 && value <= 10000) out.seatConfig[field] = value;
+        }
+        const time = own(data.seatConfig, 'reserveBeforeTime'); if (typeof time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(time)) out.seatConfig.reserveBeforeTime = time;
+      }
+      body.data = out;
+    }
+    return { apiStyle, endpoint, httpStatus: Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : 0, body, omittedFields: true };
+  }
+}
+async function limitedText(response) {
+  const clone = response.clone();
+  if (!clone.body?.getReader) { const text = await clone.text(); if (text.length > 1000000) throw new Error('TOO_LARGE'); return text; }
+  const reader = clone.body.getReader(), chunks = []; let length = 0;
+  while (true) {
+    const { value, done } = await reader.read(); if (done) break;
+    length += value.byteLength;
+    if (length > 1000000) { reader.cancel().catch(() => {}); throw new Error('TOO_LARGE'); }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(length); let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  return new TextDecoder().decode(bytes);
+}
+class DiagnosticCollector {
+  constructor({ windowRef = globalThis.window } = {}) { this.window = windowRef; this.enabled = false; this.samples = []; this.sanitizer = new DiagnosticSanitizer(); this.epoch = 0; this.restoreHooks = null; }
+  capture(raw, source) {
+    if (!this.enabled) return;
+    try { this.samples.push(this.sanitizer.project(raw, source)); this.samples = this.samples.slice(-10); } catch {}
+  }
+  importReadonly(text, apiStyle, endpoint) {
+    if (!this.enabled || typeof text !== 'string' || text.length > 1000000) throw new Error('DIAGNOSTICS_DISABLED_OR_TOO_LARGE');
+    const sample = this.sanitizer.project(JSON.parse(text), { apiStyle, endpoint }); this.samples.push(sample); this.samples = this.samples.slice(-10);
+  }
+  enable() {
+    if (this.enabled) return;
+    this.enabled = true; this.epoch += 1; const epoch = this.epoch, self = this, win = this.window;
+    const proto = win?.XMLHttpRequest?.prototype, originalOpen = proto?.open, originalSend = proto?.send, originalFetch = win?.fetch;
+    const metadata = new WeakMap();
+    function open(method, url, ...rest) {
+      const source = endpointOf(url, win.location?.href);
+      metadata.set(this, ['GET', 'POST'].includes(String(method).toUpperCase()) ? source : null);
+      return originalOpen.call(this, method, url, ...rest);
+    }
+    function send(...args) {
+      const source = metadata.get(this);
+      if (source) this.addEventListener('loadend', () => {
+        if (!self.enabled || self.epoch !== epoch) return;
+        const final = this.responseURL ? endpointOf(this.responseURL, win.location?.href) : source;
+        if (!final || final.endpoint !== source.endpoint || final.apiStyle !== source.apiStyle) return;
+        try {
+          let raw;
+          if (this.responseType === 'json') raw = this.response;
+          else if (!this.responseType || this.responseType === 'text') { if (this.responseText.length > 1000000) return; raw = JSON.parse(this.responseText); }
+          self.capture(raw, { ...source, httpStatus: this.status });
+        } catch {}
+      }, { once: true });
+      return originalSend.apply(this, args); // Never reads or changes request payload.
+    }
+    function wrappedFetch(input, init) {
+      const url = typeof input === 'string' || input instanceof URL ? input : input?.url;
+      const source = endpointOf(url, win.location?.href), method = String(init?.method ?? input?.method ?? 'GET').toUpperCase();
+      const promise = originalFetch.call(this, input, init);
+      if (source && ['GET', 'POST'].includes(method)) Promise.resolve(promise).then(response => {
+        const final = response.url ? endpointOf(response.url, win.location?.href) : source;
+        if (!self.enabled || self.epoch !== epoch || !final || final.endpoint !== source.endpoint || final.apiStyle !== source.apiStyle) return;
+        limitedText(response).then(text => { if (self.enabled && self.epoch === epoch) self.capture(JSON.parse(text), { ...source, httpStatus: response.status }); }).catch(() => {});
+      }).catch(() => {});
+      return promise; // Original response and promise semantics remain intact.
+    }
+    if (proto && originalOpen && originalSend) { proto.open = open; proto.send = send; }
+    if (typeof originalFetch === 'function') win.fetch = wrappedFetch;
+    this.restoreHooks = () => {
+      // Do not overwrite hooks installed later by the reservation observer or another extension.
+      if (proto?.open === open) proto.open = originalOpen;
+      if (proto?.send === send) proto.send = originalSend;
+      if (win?.fetch === wrappedFetch) win.fetch = originalFetch;
+    };
+  }
+  disable() { this.enabled = false; this.epoch += 1; this.restoreHooks?.(); this.restoreHooks = null; this.samples = []; this.sanitizer = new DiagnosticSanitizer(); }
+  preview() {
+    return JSON.stringify({ schemaVersion: 1, provenance: 'LOCAL_ANONYMIZED_READONLY_CAPTURE', identifiersAnonymized: true, absoluteDatesAnonymized: true, contractVerified: false, samples: this.samples }, null, 2);
+  }
+}
+class DiagnosticPanel {
+  constructor({ collector, documentRef = globalThis.document, download = null } = {}) {
+    this.collector = collector; this.document = documentRef; this.root = null; this.previewRoot = null;
+    this.download = download ?? ((text) => {
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const link = this.document.createElement('a'); link.href = url; link.download = 'hebut-seat-readonly-diagnostics.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+    });
+  }
+  mount(parent = this.document.body) {
+    if (this.root) return this.root;
+    const root = this.document.createElement('details'); root.id = 'hebut-seat-diagnostics';
+    const summary = this.document.createElement('summary'); summary.textContent = '只读接口诊断（默认关闭）'; root.append(summary);
+    const info = this.document.createElement('p'); info.textContent = '只采集正常页面请求，不主动查询。编号和日期会替换；导出前请预览确认，不提交个人样本到Git。'; root.append(info);
+    const enable = this.document.createElement('button'); enable.textContent = '开启本地采集'; enable.onclick = () => { this.collector.enable(); enable.textContent = '采集已开启'; }; root.append(enable);
+    const stop = this.document.createElement('button'); stop.textContent = '停止并清除诊断缓存'; stop.onclick = () => { this.collector.disable(); if (this.rawInput) this.rawInput.value = '';  enable.textContent = '开启本地采集'; this.previewRoot?.remove(); this.previewRoot = null; }; root.append(stop);
+    const exportButton = this.document.createElement('button'); exportButton.textContent = '预览并导出诊断JSON'; exportButton.onclick = () => this.showPreview(); root.append(exportButton);
+    const fallback = this.document.createElement('details'), label = this.document.createElement('summary'); label.textContent = '未捕获到响应？手动粘贴只读响应'; fallback.append(label);
+    const instructions = this.document.createElement('p'); instructions.textContent = '浏览器开发者工具Network中仅复制index/getstatus的Response JSON；不要复制请求Headers、Cookie、整份HAR或页面源码。粘贴后在本地白名单脱敏，原文不会进入导出。'; fallback.append(instructions);
+    const style = this.document.createElement('select'); for (const name of ['seat', 'seatengine']) { const option = this.document.createElement('option'); option.value = name; option.textContent = name; style.append(option); }
+    const endpoint = this.document.createElement('select'); for (const name of ['index', 'getstatus']) { const option = this.document.createElement('option'); option.value = name; option.textContent = name; endpoint.append(option); }
+    const raw = this.document.createElement('textarea'); this.rawInput = raw; raw.placeholder = '仅粘贴Response JSON（本地处理）';
+    const imported = this.document.createElement('p'), importButton = this.document.createElement('button'); importButton.textContent = '本地脱敏后加入预览';
+    importButton.onclick = () => { try { this.collector.importReadonly(raw.value, style.value, endpoint.value); imported.textContent = '已脱敏，原文已清除。'; } catch { imported.textContent = '请先开启采集，并粘贴不超过1MB的JSON响应。'; } finally { raw.value = ''; } };
+    fallback.append(style, endpoint, raw, importButton, imported); root.append(fallback); parent.append(root); this.root = root; return root;
+  }
+  showPreview() {
+    this.previewRoot?.remove();
+    const dialog = this.document.createElement('dialog'), text = this.collector.preview();
+    const heading = this.document.createElement('p'); heading.textContent = '本地脱敏预览：仅点击“确认下载”才导出。编号和日期均为替代值，不能用于真实接口请求。';
+    const preview = this.document.createElement('pre'); preview.textContent = text; preview.style.cssText = 'max-height:55vh;overflow:auto;white-space:pre-wrap';
+    const confirm = this.document.createElement('button'); confirm.textContent = '确认下载JSON'; confirm.disabled = this.collector.samples.length === 0;
+    confirm.onclick = () => { this.download(text); dialog.remove(); this.previewRoot = null; };
+    const cancel = this.document.createElement('button'); cancel.textContent = '取消'; cancel.onclick = () => { dialog.remove(); this.previewRoot = null; };
+    dialog.append(heading, preview, confirm, cancel); this.document.body.append(dialog); this.previewRoot = dialog;
+    if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
+    return dialog;
+  }
+  destroy() { this.collector.disable(); if (this.rawInput) this.rawInput.value = '';  this.previewRoot?.remove(); this.root?.remove(); this.root = null; this.previewRoot = null; }
+}
+
+
 class OpenScheduler {
   constructor({ clock, documentRef = document, windowRef = window, onTick = () => {}, onFire = () => {}, onBackground = () => {}, onWake = () => {} } = {}) {
     this.clock = clock; this.document = documentRef; this.window = windowRef; this.onTick = onTick; this.onFire = onFire; this.onBackground = onBackground; this.onWake = onWake; this.timer = null; this.raf = null; this.running = false; this.fireAt = null;
@@ -394,9 +604,10 @@ const patterns = [[ResultKind.HUMAN_VERIFICATION_REQUIRED, /验证码|安全|风
 function classifyResult(result = {}) { if (result.success === true) return ResultKind.SUCCESS; if (result.networkError || result.timeout || !result.hasJson) return ResultKind.AMBIGUOUS; const msg = String(result.msg ?? ''); for (const [kind, regex] of patterns) if (regex.test(msg)) return kind; return ResultKind.AMBIGUOUS; }
 
 class ReservationEngine {
-  constructor({ adapter, clock, scheduler, storage, logger, notifier = () => {}, now = () => Date.now(), lockApi = globalThis.navigator?.locks, targetDayFrameLoaderFactory = null, frameAdapterFactory = null, submitObserverFactory = null, retryScheduler = (work, delay) => setTimeout(work, delay) } = {}) {
+  constructor({ adapter, clock, scheduler, storage, logger, notifier = () => {}, now = () => Date.now(), lockApi = globalThis.navigator?.locks, submissionCoordinator = null, targetDayFrameLoaderFactory = null, frameAdapterFactory = null, submitObserverFactory = null, retryScheduler = (work, delay) => setTimeout(work, delay) } = {}) {
     this.adapter = adapter; this.clock = clock; this.scheduler = scheduler; this.storage = storage; this.logger = logger; this.notifier = notifier; this.now = now; this.lockApi = lockApi; this.retryScheduler = retryScheduler; this.stateListeners = new Set();
     this.targetDayFrameLoaderFactory = targetDayFrameLoaderFactory ?? (() => new TargetDayFrameLoader({ logger: this.logger })); this.frameAdapterFactory = frameAdapterFactory ?? ((refs) => new ChaoxingSeatPageAdapter({ ...refs, logger: this.logger })); this.submitObserverFactory = submitObserverFactory ?? ((options) => new SubmitObserver(options));
+    this.submissionCoordinator = submissionCoordinator;
     this.machine = this.createMachine(); this.settings = null; this.plan = null; this.attempts = 0; this.targetGateAttempts = 0; this.seatIndex = 0; this.inFlight = false; this.verifyTimer = null; this.leaseHeartbeatTimer = null; this.metrics = {}; this.owner = `${Math.random().toString(36).slice(2)}:${Date.now()}`; this.submissionLockHeld = false; this.targetLoader = null; this.frameAdapter = null; this.frameVm = null; this.frameObserver = null;
   }
   createMachine(initial = SeatState.IDLE) { return new SeatStateMachine(initial, (event) => { this.logger.log('info', 'STATE_CHANGED', event.to, event); for (const listener of this.stateListeners) listener(event); }); }
@@ -404,6 +615,10 @@ class ReservationEngine {
   transition(to, reason) { if (this.machine.state !== to) this.machine.transition(to, reason); }
   status() { return { state: this.machine.state, settings: this.settings, plan: this.plan, attempts: this.attempts, targetGateAttempts: this.targetGateAttempts, seatIndex: this.seatIndex, inFlight: this.inFlight, submissionLeaseHeld: this.submissionLockHeld, iframeActive: Boolean(this.targetLoader?.frameWindow), attemptLedger: this.plan ? this.storage.getAttempt(this.plan.targetDay) : null, metrics: this.metrics, clock: this.clock.snapshot?.() }; }
   loadSettings() { this.settings = this.storage.getSettings(); return this.settings; }
+  updateSettings(settings) {
+    if (this.inFlight || ['VERIFYING', 'NEEDS_HUMAN', 'FIRING', 'LOADING_TARGET_DAY', 'TARGET_READY'].includes(this.machine.state)) throw new Error('EXISTING_ATTEMPT_FROZEN');
+    this.validateSettings(settings); this.stop('configuration changed'); this.storage.saveSettings(settings); this.settings = settings;
+  }
   async refreshClock() { const vm = this.adapter.getVue(); const snapshot = await this.clock.calibrate(this.adapter.location.href, 3, this.adapter.getServerTimeCandidates?.(vm) ?? []); this.logger.log('info', 'CLOCK_SYNC', this.machine.state, snapshot); return snapshot; }
   resetForNextDay(reason = 'daily rollover') { clearTimeout(this.verifyTimer); this.scheduler.stop(); this.releaseSubmissionLease(); this.destroyTargetFrame(); this.plan = null; this.attempts = 0; this.targetGateAttempts = 0; this.seatIndex = 0; this.inFlight = false; this.metrics = {}; this.owner = `${Math.random().toString(36).slice(2)}:${Date.now()}`; this.machine = this.createMachine(); this.logger.log('info', 'DAILY_CYCLE_RESET', this.machine.state, { reason }); }
   validateSettings(settings) {
@@ -421,6 +636,7 @@ class ReservationEngine {
   }
   async dryRun() { return this.arm('dry-run'); }
   async arm(mode = this.settings?.mode ?? 'dry-run', { recovery = false } = {}) {
+    if (mode === 'live' && !this.submissionCoordinator) throw new Error('WORKER_ONLY: 请在独立 Worker 控制页执行，浏览器未连接持久协调器');
     if (this.machine.state !== SeatState.READY) await this.probe(); this.settings = { ...this.settings, mode }; this.validateSettings(this.settings); const vm = this.adapter.getVue(); const clock = await this.refreshClock();
     const targetDay = tomorrowShanghai(this.clock.now()); if (this.storage.getSuccess(targetDay)) throw new Error(`该日期已有成功预约记录: ${targetDay}`); if (mode === 'live' && this.storage.getAttempt(targetDay)) throw new Error(`该日期已有提交账本记录，拒绝重复提交: ${targetDay}`);
     const { context } = this.adapter.assertCompatible(vm, this.settings.expectedRoomId); const openAt = calculateOpenAt(targetDay, context.seatConfig.reserveBeforeDay, context.seatConfig.reserveBeforeTime); this.plan = { targetDay, openAt, fireAt: openAt + Number(this.settings.fireDelayMs), context, seats: this.settings.seatPriority.map(String), mode, target: null };
@@ -449,6 +665,9 @@ class ReservationEngine {
     const prepared = this.frameAdapter.prepareReservation(target, vm); const selected = this.frameAdapter.getCurrentSelection(vm); if (selected.day !== target.day || String(selected.seatNum) !== String(seatNum) || selected.startTime !== target.startTime || selected.endTime !== target.endTime || selected.duration !== prepared.duration) throw new Error('TARGET_FRAME_PREPARE_RECHECK_FAILED'); this.plan.target = target; this.metrics.targetPrepareAt = this.clock.now(); this.metrics.target_prepare_at = this.metrics.targetPrepareAt; this.transition(SeatState.FIRING, 'target iframe final guard pass');
     this.logger.log('info', 'IFRAME_FINAL_GUARD_PASS', this.machine.state, { targetDay: target.day, iframeDay: selected.day, roomId: compatible.context.roomId, seatNum, startTime: target.startTime, endTime: target.endTime, duration: prepared.duration, finalUrl: this.targetLoader.inspect().finalUrl, mode: this.plan.mode });
     if (this.plan.mode !== 'live') { this.logger.log('info', 'IFRAME_DRY_RUN_WOULD_SUBMIT', this.machine.state, { targetDay: target.day, iframeDay: selected.day, roomId: compatible.context.roomId, seatNum, startTime: target.startTime, endTime: target.endTime, duration: prepared.duration, finalUrl: this.targetLoader.inspect().finalUrl }); return this.stop('dry-run complete'); }
+    // No production browser coordinator is installed: the Worker is the sole writer.
+    // Offline fixtures inject a coordinator to continue exercising the legacy page adapter.
+    if (!this.submissionCoordinator || !await this.submissionCoordinator.claim({ ...target, roomId: compatible.context.roomId })) throw new Error('PERSISTENT_COORDINATOR_REQUIRED');
     this.installFrameObserver(); this.acquireSubmissionLease(); this.storage.markSubmittedUnverified(this.plan.targetDay, { owner: this.owner, roomId: compatible.context.roomId, seatNum, startTime: target.startTime, endTime: target.endTime }); this.inFlight = true; this.attempts += 1; this.metrics.iframeSubmitCalledAt = this.clock.now(); this.metrics.iframe_submit_called_at = this.metrics.iframeSubmitCalledAt; this.storage.saveRuntime({ armed: true, targetDay: this.plan.targetDay, submittedTargetDay: this.plan.targetDay, plan: this.plan }); this.transition(SeatState.VERIFYING, 'official iframe vm.submit called'); this.logger.log('info', 'IFRAME_FIRE', this.machine.state, { attempt: this.attempts, seat: seatNum }); this.frameAdapter.submitOfficial(vm); this.beginVerification();
   }
   async fire() {
@@ -537,25 +756,29 @@ class DailyReservationController {
 
 
 
+function uiText(value) { return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
+
 class SeatHelperPanel {
   constructor({ engine, storage, logger, controller = null, documentRef = document } = {}) { this.engine = engine; this.storage = storage; this.logger = logger; this.controller = controller; this.document = documentRef; this.root = null; this.timer = null; }
   mount() {
     if (this.root) return this.root; const host = this.document.createElement('section'); host.id = 'hebut-seat-helper-panel'; host.innerHTML = `
       <style>#hebut-seat-helper-panel{position:fixed;right:16px;bottom:16px;z-index:2147483647;width:305px;color:#e5e7eb;background:#111827;border:1px solid #374151;border-radius:10px;box-shadow:0 12px 32px #0008;font:12px/1.45 system-ui,sans-serif}#hebut-seat-helper-panel *{box-sizing:border-box}#hebut-seat-helper-panel header{padding:10px 12px;font-weight:700;border-bottom:1px solid #374151}#hebut-seat-helper-panel main{padding:10px 12px;display:grid;gap:7px}#hebut-seat-helper-panel .grid{display:grid;grid-template-columns:90px 1fr;gap:4px 8px}#hebut-seat-helper-panel .live{color:#fecaca;font-weight:700}#hebut-seat-helper-panel .dry{color:#bbf7d0;font-weight:700}#hebut-seat-helper-panel input,#hebut-seat-helper-panel select{width:100%;background:#1f2937;color:#fff;border:1px solid #4b5563;border-radius:4px;padding:4px}#hebut-seat-helper-panel button{cursor:pointer;background:#374151;color:#fff;border:1px solid #6b7280;border-radius:5px;padding:6px}#hebut-seat-helper-panel button:hover{background:#4b5563}#hebut-seat-helper-panel .buttons{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}#hebut-seat-helper-panel .settings{border-top:1px solid #374151;padding-top:8px}</style>
-      <header>HEBUT Seat Helper</header><main><div id="hsh-status"></div><div class="grid" id="hsh-details"></div><div class="buttons"><button data-action="reconcile">立即检查</button><button data-action="dry">Dry Run</button><button data-action="arm">手动预约明天</button><button data-action="stop">停止自动预约</button><button data-action="log">下载日志</button><button data-action="notify">启用通知</button></div><div class="settings"><strong>设置</strong><div class="grid"><label>座位优先级</label><input data-setting="seatPriority" placeholder="216,215"><label>开始时间</label><input data-setting="startTime" placeholder="08:00"><label>结束时间</label><input data-setting="endTime" placeholder="22:00"><label>延迟 ms</label><input data-setting="fireDelayMs" type="number"><label>模式</label><select data-setting="mode"><option value="dry-run">DRY RUN</option><option value="live">LIVE</option></select><label>自动预约</label><input data-setting="autoArm" type="checkbox"></div><button data-action="save">保存设置</button></div></main>`;
-    this.document.body.append(host); this.root = host; host.addEventListener('click', (event) => this.action(event)); this.render(); this.timer = setInterval(() => this.render(), 200); return host;
+      <header>HEBUT Seat Helper</header><main><div id="hsh-status"></div><div class="grid" id="hsh-details"></div><div class="buttons"><button data-action="reconcile">立即检查</button><button data-action="dry">Dry Run</button><button data-action="arm">模拟明天流程</button><button data-action="stop">停止自动预约</button><button data-action="log">下载日志</button><button data-action="notify">启用通知</button></div><div class="settings"><strong>本地模拟设置（真实预约请打开 Worker /control）</strong><div class="grid"><label>座位优先级</label><input data-setting="seatPriority" placeholder="216,215"><label>开始时间</label><input data-setting="startTime" placeholder="08:30"><label>结束时间</label><input data-setting="endTime" placeholder="22:00"><label>延迟 ms</label><input data-setting="fireDelayMs" type="number"><label>模式</label><select data-setting="mode"><option value="dry-run">DRY RUN</option></select><label>自动预约</label><input data-setting="autoArm" type="checkbox"></div><button data-action="save">保存设置</button></div></main>`;
+    this.document.body.append(host); this.root = host; host.addEventListener('input', () => { this.editing = true; }); host.addEventListener('click', (event) => this.action(event)); this.render(); this.timer = setInterval(() => this.render(), 200); return host;
   }
   getInput(name) { return this.root.querySelector(`[data-setting="${name}"]`); }
-  saveSettings() { const current = this.storage.getSettings(); const settings = { ...current, seatPriority: this.getInput('seatPriority').value.split(',').map((item) => item.trim()).filter(Boolean), startTime: this.getInput('startTime').value.trim(), endTime: this.getInput('endTime').value.trim(), fireDelayMs: Number(this.getInput('fireDelayMs').value), mode: this.getInput('mode').value, autoArm: this.getInput('autoArm').checked }; this.storage.saveSettings(settings); this.engine.settings = settings; if (settings.autoArm) this.controller?.start(); else this.controller?.stop('config disabled'); this.logger.log('info', 'CONFIG_SAVED', this.engine.machine.state, { ...settings }); this.render(); }
+  saveSettings() { const current = this.storage.getSettings(); const settings = { ...current, seatPriority: this.getInput('seatPriority').value.split(',').map((item) => item.trim()).filter(Boolean), startTime: this.getInput('startTime').value.trim(), endTime: this.getInput('endTime').value.trim(), fireDelayMs: Number(this.getInput('fireDelayMs').value), mode: this.getInput('mode').value, autoArm: this.getInput('autoArm').checked }; this.engine.updateSettings(settings); this.editing = false; if (settings.autoArm) this.controller?.start(); else this.controller?.stop('config disabled'); this.logger.log('info', 'CONFIG_SAVED', this.engine.machine.state, { ...settings }); this.render(); }
   async action(event) { const action = event.target.dataset.action; if (!action) return; try { if (action === 'reconcile') await this.controller?.reconcile('manual', { resyncClock: true }); if (action === 'dry') await this.engine.dryRun(); if (action === 'arm') await this.engine.arm(this.storage.getSettings().mode); if (action === 'stop') { this.storage.saveSettings({ ...this.storage.getSettings(), autoArm: false }); this.controller?.stop('manual'); this.engine.stop(action); } if (action === 'log') this.logger.download(); if (action === 'notify') await this.engine.enableNotifications(); if (action === 'save') this.saveSettings(); } catch (error) { this.engine.fail(error); } this.render(); }
   render() {
     if (!this.root) return; const status = this.engine.status(); const settings = this.storage.getSettings(); const plan = status.plan; const clock = status.clock ?? {}; const remaining = plan ? Math.max(0, plan.fireAt - (this.engine.clock.now?.() ?? Date.now())) : null;
-    const uncertain = clock.source === 'LOCAL_FALLBACK' || clock.uncertaintyMs === null || Number(clock.uncertaintyMs) > Number(settings.fireDelayMs); const human = status.state === 'NEEDS_HUMAN' ? ' <span class="live">需要人工验证：请在目标页 iframe 中完成官方验证</span>' : ''; const daily = this.controller?.status?.() ?? {}; const targetDay = plan?.targetDay ?? daily.lastTargetDay ?? '—'; const latestSuccess = this.storage.getLatestSuccess?.(); const targetSuccess = this.storage.getSuccess(targetDay); this.root.querySelector('#hsh-status').innerHTML = `<strong>状态：</strong>${status.state} &nbsp; <span class="${settings.mode === 'live' ? 'live' : 'dry'}">${settings.mode === 'live' ? 'LIVE — 自动预约会真实提交' : 'DRY RUN — 不会调用 vm.submit()'}</span>${uncertain ? ' <span class="live">TIME UNCERTAIN</span>' : ''}${human}`;
-    this.root.querySelector('#hsh-details').innerHTML = `<span>自动预约</span><span>${settings.autoArm ? '开启' : '关闭'}</span><span>当前日期</span><span>${formatShanghaiDay(this.engine.clock.now?.() ?? Date.now())}</span><span>当前房间</span><span>${plan?.context?.roomName || '—'}</span><span>roomId</span><span>${plan?.context?.roomId ?? settings.expectedRoomId}</span><span>目标日期</span><span>${targetDay}</span><span>目标座位</span><span>${settings.seatPriority.join(', ')}</span><span>预约时段</span><span>${settings.startTime} - ${settings.endTime}</span><span>学校开放</span><span>提前 ${plan?.context?.seatConfig?.reserveBeforeDay ?? '—'} 天 / ${plan?.context?.seatConfig?.reserveBeforeTime ?? '—'}</span><span>下一次动作</span><span>${daily.nextCheckAt ? new Date(daily.nextCheckAt).toLocaleTimeString() : (remaining === null ? '—' : (remaining / 1000).toFixed(3) + ' s')}</span><span>明天已成功</span><span>${targetSuccess ? '是' : '否'}</span><span>时间源</span><span>${clock.source ?? '—'} ${clock.offsetMs ?? ''}ms / ±${clock.uncertaintyMs ?? '—'}ms${uncertain ? ' TIME UNCERTAIN' : ''}</span><span>页面</span><span>${this.document.visibilityState === 'hidden' ? 'HIDDEN' : 'VISIBLE'}</span><span>最近成功</span><span>${latestSuccess?.day ?? '—'}</span>`;
+    const uncertain = clock.source === 'LOCAL_FALLBACK' || clock.uncertaintyMs === null || Number(clock.uncertaintyMs) > Number(settings.fireDelayMs); const human = status.state === 'NEEDS_HUMAN' ? ' <span class="live">需要人工验证：请在目标页 iframe 中完成官方验证</span>' : ''; const daily = this.controller?.status?.() ?? {}; const targetDay = plan?.targetDay ?? daily.lastTargetDay ?? '—'; const latestSuccess = this.storage.getLatestSuccess?.(); const targetSuccess = this.storage.getSuccess(targetDay); this.root.querySelector('#hsh-status').innerHTML = `<strong>状态：</strong>${status.state} &nbsp; <span class="${settings.mode === 'live' ? 'live' : 'dry'}">${settings.mode === 'live' ? 'LIVE 已阻止：请使用 Worker 控制页' : 'DRY RUN — 不会调用 vm.submit()'}</span>${uncertain ? ' <span class="live">TIME UNCERTAIN</span>' : ''}${human}`;
+    this.root.querySelector('#hsh-details').innerHTML = `<span>自动预约</span><span>${settings.autoArm ? '开启' : '关闭'}</span><span>当前日期</span><span>${formatShanghaiDay(this.engine.clock.now?.() ?? Date.now())}</span><span>当前房间</span><span>${uiText(plan?.context?.roomName || '—')}</span><span>roomId</span><span>${uiText(plan?.context?.roomId ?? settings.expectedRoomId)}</span><span>目标日期</span><span>${uiText(targetDay)}</span><span>目标座位</span><span>${uiText(settings.seatPriority.join(', '))}</span><span>预约时段</span><span>${uiText(settings.startTime)} - ${uiText(settings.endTime)}</span><span>学校开放</span><span>提前 ${uiText(plan?.context?.seatConfig?.reserveBeforeDay ?? '—')} 天 / ${uiText(plan?.context?.seatConfig?.reserveBeforeTime ?? '—')}</span><span>下一次动作</span><span>${daily.nextCheckAt ? new Date(daily.nextCheckAt).toLocaleTimeString() : (remaining === null ? '—' : (remaining / 1000).toFixed(3) + ' s')}</span><span>明天已成功</span><span>${targetSuccess ? '是' : '否'}</span><span>时间源</span><span>${uiText(clock.source ?? '—')} ${clock.offsetMs ?? ''}ms / ±${clock.uncertaintyMs ?? '—'}ms${uncertain ? ' TIME UNCERTAIN' : ''}</span><span>页面</span><span>${this.document.visibilityState === 'hidden' ? 'HIDDEN' : 'VISIBLE'}</span><span>最近成功</span><span>${latestSuccess?.day ?? '—'}</span>`;
+    if (this.editing) return;
     for (const [key, value] of Object.entries({ seatPriority: settings.seatPriority.join(','), startTime: settings.startTime, endTime: settings.endTime, fireDelayMs: settings.fireDelayMs, mode: settings.mode })) { const input = this.getInput(key); if (input && this.document.activeElement !== input) input.value = value; } this.getInput('autoArm').checked = Boolean(settings.autoArm);
   }
   destroy() { clearInterval(this.timer); this.root?.remove(); this.root = null; }
 }
+
 
 
 
@@ -648,15 +871,28 @@ function boot() {
       return report;
     } finally { loader.destroy(); }
   };
-  const api = window.HEBUT_SEAT = { probe: () => engine.probe(), dryRun: () => engine.dryRun(), arm: () => engine.arm(storage.getSettings().mode), disarm: () => { storage.saveSettings({ ...storage.getSettings(), autoArm: false }); dailyController.stop('disarm'); engine.stop('disarm'); }, stop: () => { storage.saveSettings({ ...storage.getSettings(), autoArm: false }); dailyController.stop('manual'); engine.stop('manual'); }, status: () => ({ ...engine.status(), daily: dailyController.status() }), reconcile: () => dailyController.reconcile('manual', { resyncClock: true }), enableNotifications: () => engine.enableNotifications(), downloadLog: () => logger.download(), downloadDiagnose: () => logger.download(`hebut-seat-diagnose-${Date.now()}.json`), config: (value) => { if (value) { storage.saveSettings({ ...storage.getSettings(), ...value }); if (storage.getSettings().autoArm) dailyController.start(); else dailyController.stop('config disabled'); } return storage.getSettings(); }, resetForDate: (day) => engine.resetForDate(day), resetAttemptForDate: (day) => engine.resetAttemptForDate(day), debug: { shadowSubmitProbe: () => createShadowSubmitProbe({ onObserved: (item) => logger.log('info', 'SHADOW_SUBMIT_OBSERVED', engine.machine.state, item) }), testIframeLoader, testTargetDayGate } };
-  panel.mount(); logger.log('info', 'READY', engine.machine.state, { api: 'window.HEBUT_SEAT', settings: storage.getSettings() });
+  const api = window.HEBUT_SEAT = { probe: () => engine.probe(), dryRun: () => engine.dryRun(), arm: () => engine.arm(storage.getSettings().mode), disarm: () => { storage.saveSettings({ ...storage.getSettings(), autoArm: false }); dailyController.stop('disarm'); engine.stop('disarm'); }, stop: () => { storage.saveSettings({ ...storage.getSettings(), autoArm: false }); dailyController.stop('manual'); engine.stop('manual'); }, status: () => ({ ...engine.status(), daily: dailyController.status() }), reconcile: () => dailyController.reconcile('manual', { resyncClock: true }), enableNotifications: () => engine.enableNotifications(), downloadLog: () => logger.download(), config: (value) => { if (value) { engine.updateSettings({ ...storage.getSettings(), ...value }); if (storage.getSettings().autoArm) dailyController.start(); else dailyController.stop('config disabled'); } return storage.getSettings(); }, resetForDate: (day) => engine.resetForDate(day), resetAttemptForDate: (day) => engine.resetAttemptForDate(day), debug: { shadowSubmitProbe: () => createShadowSubmitProbe({ onObserved: (item) => logger.log('info', 'SHADOW_SUBMIT_OBSERVED', engine.machine.state, item) }), testIframeLoader, testTargetDayGate } };
+  panel.mount();
+  const diagnostics = new DiagnosticPanel({ collector: new DiagnosticCollector() });
+  diagnostics.mount(panel.root.querySelector('main'));
+  api.downloadDiagnose = () => diagnostics.showPreview();
+  api.previewReadonlyDiagnostics = () => diagnostics.showPreview();
+  logger.log('info', 'READY', engine.machine.state, { api: 'window.HEBUT_SEAT', settings: storage.getSettings() });
   const settings = storage.getSettings(); (async () => { try { if (settings.autoArm) dailyController.start(); else await engine.resumeIfArmed(); } catch (error) { engine.fail(error); } })();
   return api;
+}
+function shouldBootDiagnostics(windowRef) {
+  return Boolean(windowRef && windowRef.top === windowRef.self && windowRef.location.hostname === 'office.chaoxing.com'
+    && /^\/front\/(?:third\/apps\/seat|apps\/seatengine)\/(?:index|select|code)$/.test(windowRef.location.pathname));
 }
 function bootTopWindowOnly() {
   // @noframes 失效时仍在运行时阻止 iframe 内 Userscript 启动。
   if (window.top !== window.self) return;
   if (shouldBoot(window)) boot();
+  else if (shouldBootDiagnostics(window) && !window.HEBUT_SEAT_DIAGNOSTICS) {
+    const panel = new DiagnosticPanel({ collector: new DiagnosticCollector() });
+    panel.mount(); window.HEBUT_SEAT_DIAGNOSTICS = { preview: () => panel.showPreview(), disable: () => panel.destroy() };
+  }
 }
 if (typeof window !== 'undefined') bootTopWindowOnly();
 
