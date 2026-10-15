@@ -16,4 +16,4 @@
 
 无法证实 unattended 签到时，能力保持 `NOT_AVAILABLE_UNDER_OFFICIAL_RULES`，产品使用“到馆操作 + 自动回读”。这表示当前证据不支持该能力，不是宣称已经取得校方禁止或允许的正式结论。
 
-另有本地 GUI 验收阻塞 G1：computer-use 已发现 Edge，但浏览器控制授权超时，未完成真实 GUI 视觉/点击验收。本地离线控制页可用 `cd worker; npm run build; node scripts/preview-control.mjs` 复现；脚本不读取真实 secrets，全部学校请求拦截，使用公开合成令牌 LOCAL_PREVIEW_ONLY。没有伪造截图或将语法测试算作 GUI 通过。
+**G1 已解除阻塞：PASS。** 2026-10-15 使用本机 Edge + Playwright 完成 15 项真实浏览器验收，含页面、连接、候选/模板/日期、保存、双标签版本冲突、暂停与刷新持久化；页面与 Worker 出站尝试均为 0。已修复保存后旧摘要、旧差异、断开连接残留与手机 checkbox 布局问题。详见 [G1_GUI_ACCEPTANCE.md](G1_GUI_ACCEPTANCE.md) 的真实失败/通过记录及截图。此前 computer-use 超时是历史记录，不再作为当前 G1 阻塞；E1–E5 未因此通过。

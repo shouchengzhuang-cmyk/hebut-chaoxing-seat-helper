@@ -18,6 +18,8 @@ Worker 成为自动预约唯一写端；油猴保留官方页面模拟与主动�
 
 验证：根 npm run check 75 项；Worker npm run check 包括类型、217 单元、dry-run、8 项真实 workerd/SQLite 集成，共 300 项、0 失败；dist 一致、语法与 diff 检查通过。未新增依赖、未修改生产开关或 migration tag。
 
-本轮未部署，未执行真实学校预约、签到或取消。学校状态、资格、开放/时段、冲突与签到正式规则仍需本人正常登录/到馆提供证据；未核验能力继续门禁关闭。computer-use 浏览器授权超时，真实 GUI 视觉/点击验收保留 BLOCKED，未以静态测试冒充通过。
+G1 后续已通过：本机真实 Edge 155.0.4283.45 headless + Playwright，使用 preview-control.mjs 完全离线预览，15 项 GUI 场景全部 PASS，页面脚本错误/非本地请求/Worker 出站尝试均为 0。覆盖加载、令牌、候选排序、非整点模板、日期与星期/暂停/覆盖、保存、双标签版本冲突、全局暂停、刷新持久化及手机布局。保存后陈旧摘要、旧差异、断开连接残留与 checkbox 布局已修复；修复前失败报告、最终通过报告及真实截图见 docs/G1_GUI_ACCEPTANCE.md。已重新运行完整 300 项，全部通过。
+
+未部署，未执行真实学校预约、签到或取消，未删除/重置已有持久状态。学校状态、资格、开放/时段、冲突与签到正式规则仍需本人正常登录/到馆提供证据；E1–E5 未核验能力继续门禁关闭。系统通知许可与实际投递不在本次 G1 范围。
 
 详见 docs/TEST_MATRIX.md、docs/EXTERNAL_VERIFICATION.md、docs/RELEASE_CHECKLIST.md、docs/ARCHITECTURE.md。保持 Draft，不合并。

@@ -13,7 +13,7 @@ npm run check
 
 check 包含 TypeScript、Node 单元测试、`wrangler deploy --dry-run` 打包和真实 workerd/SQLite 集成。所有学校请求在集成测试中被拦截，CI 不部署、不进行真实预约。根目录另运行 npm run check；已提交 dist 必须与构建一致。
 
-`node scripts/preview-control.mjs` 提供 127.0.0.1:18765/control 离线 UI，不加载 .dev.vars，公开合成令牌为 LOCAL_PREVIEW_ONLY，写入关闭且出站全部拦截。测试不是本校契约或真实 GUI 通过证明。
+`node scripts/preview-control.mjs` 提供 127.0.0.1:18765/control 离线 UI，不加载 .dev.vars，公开合成令牌为 LOCAL_PREVIEW_ONLY，写入关闭且出站全部拦截。`node scripts/gui-acceptance.mjs` 复用本机已有 Playwright 和 Edge，自动启动此预览并执行真实浏览器验收；外部安装位置可通过 PLAYWRIGHT_MODULE_PATH 指定，无新增仓库依赖。本轮 G1 15/15 PASS，复现和截图见 ../docs/G1_GUI_ACCEPTANCE.md，学校契约仍未验证。
 
 ## 配置与 secrets
 

@@ -47,7 +47,7 @@ npm run check
 node scripts/preview-control.mjs
 ```
 
-先由 check 生成 `.build/index.js`，再打开 `http://127.0.0.1:18765/control`。本地预览令牌为公开合成值 `LOCAL_PREVIEW_ONLY`，它不属于任何生产账号。预览不加载 `.dev.vars`，关闭所有学校写入，拦截所有学校请求；退出进程即丢弃预览数据。它不能证明学校兼容或浏览器布局已验收。
+先由 check 生成 `.build/index.js`，再打开 `http://127.0.0.1:18765/control`。本地预览令牌为公开合成值 `LOCAL_PREVIEW_ONLY`，它不属于任何生产账号。预览不加载 `.dev.vars`，关闭所有学校写入，拦截所有学校请求；退出进程即丢弃预览数据。本轮已用真实 Edge/Playwright 完成 [G1 GUI 验收 15/15](docs/G1_GUI_ACCEPTANCE.md)，这不构成学校兼容或真实预约/签到证明。
 
 项目没有新增依赖。Worker 类型检查、217 项单元与 8 项 workerd/SQLite 集成，根目录 75 项，共 300 项；见测试矩阵中的实际运行记录。依赖安装需要网络，测试本身使用离线合成数据。
 

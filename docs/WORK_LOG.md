@@ -1,5 +1,7 @@
 # 本轮工程工作记录
 
+**最新状态：G1 已通过。** 下表与早期交付记录保留当时边界，后续真实 GUI 验收结果见文末和 [G1_GUI_ACCEPTANCE.md](G1_GUI_ACCEPTANCE.md)。
+
 2026-10-15，任务书版本 1.0。继续 feat/worker-seat-lifecycle-20261013 与原 Draft PR #1。
 
 | 里程碑 | 实际完成与边界 |
@@ -24,3 +26,15 @@
 推送/PR 更新：PASS。首次自动审批在执行前拒绝正常 push 与 gh pr edit，要求对确切目标及内容单独确认；随后用户明确回复“批准推送并更新原 Draft PR #1”。据此正常推送 14efa96、6c96d14、88e8067、1939e9a 至原仓库 feat/worker-seat-lifecycle-20261013，并按 PR_DESCRIPTION.md 更新标题和正文。未新建 PR、未合并、未强推、未部署。
 
 远端代码 HEAD 1939e9a0e410bdf0c229335e06a917762798d5f8 已核验 OPEN / Draft。新触发的 [push Actions](https://github.com/shouchengzhuang-cmyk/hebut-chaoxing-seat-helper/actions/runs/38733722451) 和 [PR Actions](https://github.com/shouchengzhuang-cmyk/hebut-chaoxing-seat-helper/actions/runs/38733728139) 均 SUCCESS，各含 Userscript、Worker 类型/单元/SQLite 两个通过的 job。随后仅补充本次发布与 CI 记录，未改代码。真实浏览器验收仍为 G1，学校真实验收为 E1–E5。
+
+## G1 后续接管
+
+基线 ffac163f908968e025ed5124d9ee969ac1e35373，远端 PR #1 OPEN / Draft，工作区干净。用户明确要求本轮完成离线 GUI、修复、提交原分支并更新原 PR，同时禁止学校请求/真实预约/部署/删持久状态/合并。
+
+使用运行时已有 Playwright 和本机 Edge，无安装依赖。真实 headless Edge 155.0.4283.45 驱动本地 preview-control.mjs 的真实 Worker/SQLite；两个标签页操作和页面刷新均由真实浏览器完成。初始脚本 12 项通过，截图复核补入陈旧摘要断言，在修复前真实失败；修复后扩展为 15 项全过，最后还验证了 14:30–20:30 非整点模板、启用设置保存与覆盖模板名称。所有中间证据保留，最终 [report.json](gui/2026-10-15T12-41-53-580Z/report.json) 为 15/15 PASS。
+
+修复控制页保存后立即刷新摘要并清旧差异、断开/错误重连清可见缓存、手机 checkbox 原生宽度、覆盖模板名称显示及冲突/认证中文提示。预览新增出站计数和测试进程 IPC 正常关闭；不停止已有端口占用者，不删除/重置已有持久状态。
+
+本轮实际重新运行根 npm run check（75/75）、Worker npm run check（tsc、217/217 单元、dry-run、8/8 workerd/SQLite）、脚本语法与 diff 检查；全部通过。GUI 另外 15/15，不以重复运行累计。最终页面错误、非本地浏览器请求、Worker 出站尝试均为 0；没有学校 Cookie、真实请求、生产部署或合并。
+
+G1 从 BLOCKED 更新为 PASS；E1–E5 与通知专项不变。完整命令、真实失败/通过记录与截图见 G1_GUI_ACCEPTANCE.md。

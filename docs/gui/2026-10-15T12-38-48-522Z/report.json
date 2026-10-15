@@ -1,0 +1,45 @@
+{
+  "runId": "2026-10-15T12-38-48-522Z",
+  "status": "FAIL",
+  "browser": "155.0.4283.45",
+  "cases": [
+    {
+      "name": "page-load-and-csp",
+      "status": "PASS"
+    },
+    {
+      "name": "reject-invalid-token-and-connect",
+      "status": "PASS"
+    },
+    {
+      "name": "candidate-order-through-real-buttons",
+      "status": "PASS"
+    },
+    {
+      "name": "time-templates-and-default-selection",
+      "status": "PASS"
+    },
+    {
+      "name": "date-weekdays-pauses-and-dated-override",
+      "status": "PASS"
+    },
+    {
+      "name": "save-plan-without-redeployment",
+      "status": "PASS"
+    },
+    {
+      "name": "save-refreshes-visible-target-and-clears-old-diff",
+      "status": "FAIL",
+      "error": "page.waitForFunction: Timeout 10000ms exceeded."
+    }
+  ],
+  "screenshots": [
+    "01-loaded.png",
+    "02-plan-saved.png",
+    "failure.png"
+  ],
+  "pageErrors": [],
+  "externalRequests": [],
+  "serverOutboundAttempts": 0,
+  "failure": "page.waitForFunction: Timeout 10000ms exceeded."
+}

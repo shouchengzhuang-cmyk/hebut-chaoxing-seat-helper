@@ -25,6 +25,8 @@
 
 总计 **300 项测试**：75 + 217 + 8。定向检查与重跑不重复累计。完整最终命令在提交前重新运行，摘要保留于工作记录；临时 .log 不进入 Git。
 
+G1 后续修复已重新执行上述完整 300 项，全部通过；另由 Edge/Playwright 真实浏览器完成 **15/15** 场景，总计 315 个检查场景。[GUI 报告与截图](G1_GUI_ACCEPTANCE.md) 单独记录，不计入 npm 单元测试数量；CI 原流程覆盖 300 项，GUI 脚本按需在有 Edge/Playwright 的本机运行。
+
 ## 行为覆盖
 
 | 验收点 | 结论 | 证据/说明 |
@@ -56,7 +58,7 @@
 | 原始状态/预约 ID/响应文本不泄露 | PASS | management、worker-ownership、diagnostics |
 | 同步 dist、版本一致 | PASS | build 读取 package.version；CI stale-dist 检查 |
 | 控制页 JS 语法、CSP、字段表单 | PASS 静态检查 | management；不等于真实 DOM 点击/布局验收 |
-| 控制页真实浏览器布局与完整体验脚本 | BLOCKED G1 | computer-use 浏览器控制授权超时，没有伪造截图 |
+| G1 控制页真实浏览器布局与交互 | PASS 15/15 | 本机真实 Edge headless + Playwright，完整离线预览；[报告/截图](G1_GUI_ACCEPTANCE.md) |
 | 本校生产状态映射与资格、窗口 | BLOCKED E1–E4 | 缺真实 UI 对照及规则证据，全部写能力保留门禁 |
 | 真实预约 + 真实签到回执 | BLOCKED E5 | 未登录学校、未部署、未修改真实座位状态 |
 | 无人值守签到 / 自动取消 | BLOCKED | 没有正式允许契约，没有猜测写接口 |
