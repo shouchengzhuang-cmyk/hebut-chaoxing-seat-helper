@@ -1,144 +1,81 @@
-# Chaoxing Seat Reserver Worker
+# Worker：单账号运行期计划与预约协调
 
-单账号、单目标时段的 TypeScript Cloudflare Workers 实现：预约、只读监测、持久提交日志、监督待人工处理、经规则核验的有限重约。签到仅提供官方页面入口和结果回读。没有后台签到、退座、取消或解除监督接口。
+当前入口由 `PlanCoordinator` 串行化配置、Cron、手工预约与只读监测，再复用原 `LifecycleCoordinator` 的持久写前日志。只有一个固定账号 SQLite DO；未新增依赖、服务、DO migration 或付费队列。真实学校协议仍待核验，本轮未部署。旧验证记录保留在 VALIDATION.md，本轮以 ../docs/TEST_MATRIX.md 为准。
 
-本次代码尚未在河北工业大学真实接口验证。默认关闭 WRITES_ENABLED、MONITOR_ENABLED、AUTO_REBOOK_ENABLED、REBOOK_RULES_VERIFIED、STATUS_PROFILE_VERIFIED。不要因测试通过就启用生产写入。
+## 开发与完整验证
 
-## 本地验证
+Node >=22.6，推荐 Node 24。本轮 Windows 实测 Node 24.15.0 / npm 11.12.1。
 
-使用 Node >=22.6（验证环境24.19.0）。
+```powershell
+npm ci --ignore-scripts
+npm run check
+```
 
-    cd worker
-    npm ci --ignore-scripts
-    npm run check
+check 包含 TypeScript、Node 单元测试、`wrangler deploy --dry-run` 打包和真实 workerd/SQLite 集成。所有学校请求在集成测试中被拦截，CI 不部署、不进行真实预约。根目录另运行 npm run check；已提交 dist 必须与构建一致。
 
-check运行源码类型检查、Node单元测试、Wrangler离线打包，以及workerd/Miniflare + SQLite Durable Object集成测试。集成测试拦截全部出站请求，无学校真实写操作。build使用wrangler deploy --dry-run，只打包，不部署。原油猴在仓库根目录执行npm run check。
+`node scripts/preview-control.mjs` 提供 127.0.0.1:18765/control 离线 UI，不加载 .dev.vars，公开合成令牌为 LOCAL_PREVIEW_ONLY，写入关闭且出站全部拦截。测试不是本校契约或真实 GUI 通过证明。
 
-## 持久化为何必要
+## 配置与 secrets
 
-/run与每日Cron确实可同时发起预约，Worker可能有多个isolate或中途重启。单进程锁无法实现跨请求互斥；KV的最终一致性不能做提交锁。使用一个固定账号级SQLite Durable Object，明确队列跨网络await持锁，保存一个account-v1记录。没有另加KV、D1、Queues或Go服务。
+保留现有 ROOM_ID/SEAT_NUM/START_TIME/END_TIME 仅用于首次迁移。迁移保持暂停、QUERY_ONLY，不更改旧 journal；以后在 /control 修改计划，无须改源码、vars 或重新部署。一个账号同时协调一个活动日期和目标，未来计划有生效版本，不并行批占多个座位。
 
-提交前持久保存SUBMITTED_UNVERIFIED。网络丢响应、超时、HTTP错误、无效JSON、成功响应不匹配均为不确定写结果，只回读，不自动重发。服务端正向确认可以恢复；负向空列表不是失败证明。即使重启、持久化最终结果失败或再次触发，未确认意图仍阻止新提交。不要通过删除DO状态或更换对象名来解锁。
-
-明确success=false拒绝后，只有短暂繁忙允许在60秒、300秒等退避后重新读状态，最多三次提交。验证码、认证、规则拒绝为停止条件。每日Cron和手工/run用同一个操作键。监测可继续处理到期的明确繁忙重试。
-
-缓存确认结果仅说明预约提交曾成功，签到/释放/完成以/status中的snapshot为准。程序不使用服务端幂等令牌；这是客户端保守的去重和恢复，不承诺上游具备exactly-once协议。
-
-## 配置
-
-非敏感参数在wrangler.jsonc。保持一个部署对应一个账号，不要在保留日志的部署上切换其他账号Cookie。
-
-| 参数 | 用途 |
-| --- | --- |
-| ROOM_ID / SEAT_NUM | 房间和精确座位号，默认3747/216，保留前导零 |
-| START_TIME / END_TIME | 预约时段，保留08:30–22:00 |
-| CHECKIN_EARLY_MINUTES / CHECKIN_LATE_MINUTES | 独立签到窗口偏移，默认各30分钟 |
-| API_STYLE | seat（默认）或seatengine，未知代际停止 |
-| POLL_SECONDS | 60–900秒，越界截断，无效值用60 |
-| WRITES_ENABLED | true才允许预约提交 |
-| MONITOR_ENABLED | true才运行监测Cron |
-| AUTO_REBOOK_ENABLED | true才考虑释放重约 |
-| REBOOK_RULES_VERIFIED | 本校重约规则核验后才设true |
-| STATUS_PROFILE_VERIFIED | 状态/字段配置核验后才设true |
-
-用secret配置以下参数，不要提交到Git、粘贴到PR或输出日志：
+以下值由维护者在本地通过 `npx wrangler secret put <NAME>` 输入，不能写 Git、URL、日志或 PR：
 
 | Secret | 用途 |
 | --- | --- |
-| CHAOOXING_COOKIE | 当前账号会话Cookie；不实现自动密码登录 |
-| ADMIN_TOKEN | 全部业务路由的Bearer凭据 |
-| CHAOOXING_RESERVE_PAGE_URL | 官方预约页，保留学校参数，按目标日期更新day |
-| CHAOOXING_HALL_URL | 到馆使用的官方大厅URL，不存二维码或定位 |
-| FID_ENC | seat旧代index参数，禁止复制其他学校默认值 |
-| SEAT_ID / SEAT_ID_ENC | seatengine新代index参数，两者必须提供 |
-| STATUS_PROFILE_JSON | 经本校脱敏证据核验的状态映射和规则字段路径 |
+| ADMIN_TOKEN | 独立控制页/API Bearer；不放入官方页和油猴 |
+| CHAOOXING_COOKIE | 本人正常登录的有效会话；不实现密码登录 |
+| CHAOOXING_RESERVE_PAGE_URL | 对应 seat/seatengine 官方 select/code 页上下文 |
+| CHAOOXING_HALL_URL | 经官方域名与路径白名单核验的到馆入口 |
+| FID_ENC | seat 代际 index 所需本校参数 |
+| SEAT_ID / SEAT_ID_ENC | seatengine 代际 index 所需本校参数 |
+| STATUS_PROFILE_JSON | 经官方 UI 对照的 states、responsePaths、policyFields |
+| RESERVATION_RULES_JSON | 经核验的房间规则数组，结构见下文 |
+| SUBMIT_CONFLICT_PROFILE_JSON | 可选的明确座位冲突码契约 |
 
-现有CHAOOXING拼写保持兼容。携Cookie的请求禁止跟随重定向。预约URL仅允许https://office.chaoxing.com的对应代际select/code路径；大厅仅允许对应代际index/select/code路径。请求8秒超时，不把上游自由文本写进日志或反射给调用者。
+现有 CHAOOXING 拼写保持兼容。学校请求不跟随携凭据重定向，8 秒超时，业务错误仅返回内部安全代码。select 页面请求同步目标房间 id 和日期，未知房间规则仍阻止提交。
 
-seat调用/data/apps/seat/index（fidEnc+r）；seatengine调用/data/apps/seatengine/index（seatId+seatIdEnc）。getstatus按reserveId查询。两代预约前缀适配，但参数集继续使用原项目的roomId/day/startTime/endTime/seatNum/captcha/wyToken，不擅自加入type/verifyData。
+默认保留 WRITES_ENABLED、MONITOR_ENABLED、AUTO_REBOOK_ENABLED、REBOOK_RULES_VERIFIED、STATUS_PROFILE_VERIFIED 全部 false。新增 RESERVATION_RULES_VERIFIED / SUBMIT_CONFLICT_PROFILE_VERIFIED 缺省等于 false；不因离线全绿设置 true。开启属于另行批准的生产配置操作，可由 secret 或经审阅的 vars 配置；本轮没有改这些值。
 
-## 状态契约及证据边界
+RESERVATION_RULES_JSON 是最多 20 个规则对象的数组，字段：evidenceId（非敏感来源编号）、roomId、validFrom/validThrough（ISO 日期）、advanceDays（0–30）、openTime、startTime/endTime（HH:MM）、stepMinutes、minMinutes、maxMinutes（正整数分钟）。同一房间/日期必须恰好命中一条；失效、重叠、未知规则拒绝。网格从房间 startTime 起算，跨午夜时段暂不支持。维护者须记录每项与学校规则的对应证据，不能直接复制测试数据。
 
-index仅接受success=true，data.curReserves和data.nearReserves为显式数组。记录要求id、roomId、seatNum、today/day/reserveDay、startTime、endTime，status保留原值。时间可为HH:MM或毫秒时间戳，转换为上海日期和分钟。匹配包含房间、精确座位号、日期、起止时间。缺字段、冲突记录、未知码值、接口异常均UNKNOWN。
+STATUS_PROFILE_JSON 沿用现有契约：states 只映射实际核验状态，不采用别校数字；responsePaths 仅允许 data 下简单路径。policyFields 的 allowed、supervisionPending、blacklisted、seatAvailable 必须都是明确 JSON 布尔值且语义适用于目标，否则初始预约也停止。getstatus 形状不符、缺数组、零 ID、未知状态、他约或矛盾记录保持 UNKNOWN。
 
-getstatus目前仅接受success=true且data.seatReserve为完整同ID记录。该响应形状是严格适配契约，尚没有本校样本证明；实际不符时要根据脱敏样本修改适配器，不能把空数据当已释放。
+可选冲突契约只支持 `{evidenceId, codeField: "code", codes: [...]}`，codes 为最多 10 个精确字符串/整数，类型必须匹配。仅 success=false 且没有认证、验证码、风控、重复预约或限流提示时可判明确冲突。缺少正式失败语义证据不启用，不能从泛化“预约失败”自动换座。
 
-STATUS_PROFILE_JSON结构：states是本校原始状态字符串到以下状态名称的映射：RESERVED_PENDING、SIGNED_IN、REVIEW_REQUIRED、RELEASED、COMPLETED、UNKNOWN。不允许映射UNRESERVED（它只能来自完整查询的空匹配）。未核验配置永不生效，不默认采用iSeatcx的0/1/3/5/9。
+## 路由
 
-可选policyFields必须配置allowed、supervisionPending、blacklisted、seatAvailable四个字段的路径；只能使用data下面的简单字段路径。四个值必须都是JSON布尔值；任意缺失或错误类型，不授予重约许可。字段路径由本校真实返回决定。test/fixture.ts使用虚构英文状态和data.rules.*字段，只用于Mock，绝不是河北工大接口样本。
-
-已知预约从index消失时查getstatus；没有完整明确记录就UNKNOWN，并保留原预约ID。不会从过了10分钟、记录缺失、日期过去或未知错误推断释放/完成。监督事件写入有界事件列表，reviewPending持续生效。只有随后可信的服务器规则字段明确表示不存在监督限制与黑名单，才清除待处理标记；历史事件保留。
-
-## 生命周期限制
-
-初次/run仅在明确未预约时提交。同一目标已有活动记录只作正向确认。释放后的初次/run不能绕过协调器规则。
-
-自动重约必须同时具备明确RELEASED记录、已核验状态映射、规则许可、座位可用、无黑名单、无待监督核验，以及两个启用开关。发送前再次读取。每个释放ID仅有一个操作，最多三次明确失败重试；同一天最多两个释放事件的重约预算。未知写结果停止。
-
-已过原START_TIME时不尝试重约：本轮没有证据证明本校剩余时段和时间网格规则，不自行猜测新起点。此版本支持尚未开始的原时段重约；上课后回馆的剩余时段重约需另行核验再扩展。一次只主动跟踪一个日期/目标。跨天先只读核验旧任务；旧时段已结束且没有未确认提交或已知监督限制时归档，保留30条历史。SIGNED_IN或UNKNOWN可以作为历史状态保存，不被改写成完成/释放。未确认提交必须先由明确匹配的新记录核验，否则显示handoff人工处理原因，禁止删除DO、清空journal或更换对象名。仍不实现多天并行活动任务。
-
-## 路由和现场签到
-
-除GET /health外，全部要求Authorization: Bearer <ADMIN_TOKEN>。
+除 GET /health 和不含私密数据的 GET /control 外，全部 Bearer 认证。不启用 CORS，控制页与 API 同源；拒绝跨站 Origin/Sec-Fetch-Site 和 URL 凭据。JSON 请求最大 16KiB，非法字段拒绝。控制页 nonce CSP、禁止 framing、令牌仅内存保存。
 
 | 路由 | 行为 |
 | --- | --- |
-| POST /run | 默认dry-run，仅取页面和生成签名 |
-| POST /run?commit=1&day=YYYY-MM-DD | 经持久化协调器预约，写入开关默认关 |
-| POST /track，JSON含day | 只读查询并跟踪一个日期；不绕过轮询频率 |
-| POST /monitor | 推进受频率限制的状态监测；仅启用且符合策略时可能正常预约 |
-| GET /status | 读取缓存状态、提交记录和待处理事件，零学校请求 |
-| GET /arrival | 返回经域名校验的官方大厅URL和现场扫码说明，零学校请求 |
+| GET /plans | 读取/首次安全迁移，零学校请求 |
+| PUT /plans | `{revision, plan}` 完整白名单计划；CAS + 审计 + 生效日期 |
+| POST /preview | `{day}` 已保存计划的纯本地规则校验，零学校请求 |
+| POST /run[?day=YYYY-MM-DD] | 无 commit 时模拟已保存计划；无 DO 的旧兼容入口仅页面 dry-run |
+| POST /run?commit=1&day=YYYY-MM-DD | 通过计划和学校门禁的一次预约/有条件重约 |
+| POST /pause | `{paused: true/false}` 全局暂停/恢复，不取消、不清账本 |
+| POST /track | `{day}` 只读跟踪，不能替换活动日期；初次真实写仍由 /run 协调跨天 |
+| POST /monitor | 限频只读监测，不暗中预约 |
+| POST /checkin | 限频只读签到回查，没有签到写入 |
+| GET /status | 缓存计划、今天明天目标、预约/签到状态、退避、历史、门禁，零学校请求 |
+| GET /arrival | secret-backed 官方大厅入口，零学校请求 |
+| POST /notifications/claim | `{day, noticeKind: "EARLY"/"DEADLINE"}` 有效提示阶段原子领取，跨标签/重启去重 |
 
-SUBMITTED_UNVERIFIED返回202，表示需要回读确认；受策略阻止返回409。先在官方页面完成实际到馆扫码/定位/验证码，再等待轮询或调用/monitor；只有服务器映射到SIGNED_IN才确认签到。/arrival不调用sign，不保存或重放二维码，不将按钮点击当在场证明。
+未知提交返回 HTTP 202，阻断/写关闭返回 409，CAS 冲突 409，非法输入 400，超长 413，错误内容类型 415。保存不等于学校预约。公开状态移除完整预约 ID、原始状态自由文本；实际 ID 保留在私有 DO 才能恢复回读。
 
-## 调度与成本
+## 调度、签到与状态
 
-每日Cron 29 14 * * *以UTC执行，对应北京时间22:29，靠近22:30取token并等待提交；目标日期固定由scheduledTime算出，延迟到午夜不改成错误日期。迟到超过22:30后的15分钟时仅记录CRON_SUBMISSION_WINDOW_MISSED，不提交；提交前再次检查窗口，短延迟可以正常尝试。监测Cron */1 * * * *按不同分支执行。两者默认均不执行业务请求。无跟踪任务、未到轮询时间、已完成时跳过；异常指数退避到15分钟。Cron不保证秒级准点。
+使用现有每分钟 Cron，读取当前已核验房间 openTime/advanceDays，最多扫描 31 个日期；开放后 15 分钟内且预约未开始才运行。不是固定 22:30，旧 14:29 UTC 注册由新版忽略。重复 Cron/按钮共享同一队列。明确忙碌沿用有界退避，单次请求读取至少间隔 60 秒，未知提交只回查；候选只有明确冲突才推进并等待至少一分钟。Worker 机器时间未测量与学校时钟偏差，不提供毫秒保证。
 
-根据2026-10-13查询的Cloudflare文档：Workers免费100,000请求/日，HTTP/Cron调用10ms CPU；SQLite DO免费100,000请求/日、13,000 GB-s/日、5百万行读取/日、100,000行写入/日、总存储5GB。DO的get/put也计隐藏SQLite表的行操作。超免费额度会失败，不自动付费。
+现场签到必须本人满足官方扫码/定位/校园网/人工前置条件。CheckinCoordinator 只认 VERIFIED_STATUS_PROFILE 的同预约 SIGNED_IN；没有无人值守签到 transport。30/30 分钟 CHECKIN_EARLY_MINUTES/CHECKIN_LATE_MINUTES 只是 advisory 提示，不是校方认证窗口，不改变预约时段。
 
-每分钟Cron最多1440次/日，单账号状态查询每轮一个index，已知ID缺失才补getstatus。不是每秒常驻任务。若每轮最坏16秒网络等待，按128MB估算DO时长约2880 GB-s/日，未计人工请求、排队与其他服务；此为容量估计，不是线上计量。没有在生产验证CPU或网络可达性。
+没有取消/退座写接口。已确认释放重约保留原预算（每释放 ID 一次操作、每日最多两个释放事件）和原授权日志，另要求运行期计划、规则、资格与全部开关；预约开始后不补剩余时段。普通监测永远只读，预约/重约只由显式执行或已启用的自动调度推进。不能从消失或时间经过推断释放。
 
-| 组件 | 决定 |
-| --- | --- |
-| Worker | 保留入口和Cron |
-| SQLite Durable Object | 为已确认的跨请求竞争、持久未确认意图引入一个 |
-| KV | 不适合幂等锁，不引入 |
-| D1 | 不需要多记录关系查询，不引入 |
+## 发布、观察与回滚
 
-参考：https://developers.cloudflare.com/workers/platform/limits/ 、https://developers.cloudflare.com/durable-objects/platform/pricing/ 、https://developers.cloudflare.com/workers/configuration/cron-triggers/。
+本轮只能 dry-run。发布前完成 ../docs/EXTERNAL_VERIFICATION.md 和 RELEASE_CHECKLIST.md，并获得授权，再执行 `npm run deploy`。保持 DO binding SEAT_ACCOUNT、类 SeatAccount、对象 single-account-v1 和 migration v1-seat-account；不要 reset DB、换对象名、清空未知日志或切换账号 Cookie。
 
-## 最少人工核验
+观察：snapshotAt、nextPollAt/nextRunAt、handoff、SUBMITTED_UNVERIFIED、plans.audit、候选 cursor、错过窗口事件。没有原始响应/秘密进日志。常规分钟监测 1440 ticks/日；无已知 ID 缺失时每次一个 index，缺失 ID 可能加 getstatus，受控提交前额外回读。真实 CPU、DO wall-clock、免费额度和账号其他应用占用没有测量，发布前核对官方当期计费，发布后看 Dashboard；不把静态容量估算当实际账单。
 
-1. 本人正常使用官方页面时，记录当前预约页/大厅URL和代际；提供去敏的index及getstatus响应（待签到、已签到，已有监督/释放事件时再提供对应响应）。去掉Cookie、token、enc、UID及个人资料，不为测试制造监督。
-2. 根据样本补齐状态和字段映射，关闭写入先测试/track、/status和/monitor；不符的返回保持UNKNOWN。确认学校关于重约资格、次数、限制与时段的实际规则；无法获取明确资格字段就保持自动重约关闭。
-3. 本人到馆通过/arrival打开官方流程，正常现场扫码后用/monitor确认SIGNED_IN。
-
-完成这些核验后才讨论部署及启用写入。本轮不合并、不部署。
-
-## 本轮：跨天归档与签到窗口
-
-/status现在同时输出checkinWindow、archives、handoff和pendingRun。08:30预约对应08:00—09:00签到；边界按窗口包含端点显示。跨午夜会输出前一天或后一天的完整+08:00时间。clockPhase只是本地时间提示，advisoryOnly始终true；09:00过去不能证明签到失败、释放或完成，也不改变08:30—22:00预约参数。
-
-旧account-v1日志进行加字段迁移，不清空原提交记录、监督标记或对象ID。结束的是本地任务时段，archives.serverTerminalConfirmed=false；只有服务器明确给出已验证的终态才为true。历史状态未知但没有未知写意图时可以归档，并记录HISTORY_STATUS_UNVERIFIED；次日预约仍需重新读取次日状态，未知返回会阻止提交。历史SUBMITTED_UNVERIFIED或待监督限制则进入显式handoff阻塞，以1/2/4/8/15分钟退避回读。存在已授权pendingRun时可在恢复后继续；Cron授权超过迟到窗口后失效，不在深夜补发。
-
-未知重约不能由同一旧释放ID确认：例如released:123的新提交丢响应，历史记录123仍显示释放不能解除未确认标记。即使跨天也保留这条意图。
-
-## 脱敏诊断与真实契约
-
-安装开发分支dist中的油猴脚本，在官方大厅、选座或码页找到“只读接口诊断（默认关闭）”。点击开启后，只观察本页正常操作的index/getstatus响应；不主动发请求。整页刷新后重新关闭，不持久化采集开关，也不采集此前加载的响应。已有预约引擎仅在原选座页运行；其他页面仅显示诊断面板。
-
-采集不到时，使用面板的本地粘贴替代：F12 → Network → index/getstatus → Response，复制JSON响应本身。不要复制Headers、请求体、Cookie或HAR。导入后自动清除粘贴原文；停止会清除采集缓存与未导入原文。
-
-白名单保留预约结构、数值状态码、时间和少量布尔规则字段；姓名/UID/Token/enc/任意额外字段被丢弃，预约ID、房间/座位和绝对日期用替代值，HH:MM和状态码保留用于适配。自由文本状态不导出原值，仅保留类型标记。JSON预览后另点确认下载；不上传、不写localStorage、不自动存Git。缓存最多10个样本，每个数组最多100条。
-
-真实状态码尚待用户正常操作时对照官方显示含义确认。离线工具只检查解析，永不标记真实兼容：
-
-    npm run check:contract -- private-diagnostics/sample.json private-diagnostics/profile.json
-
-profile可以配置states、policyFields和responsePaths.current/near/detail（仅data下路径），不要求复制iSeatcx数字。默认仍严格使用curReserves/nearReserves及data.seatReserve；缺失数组、请求错误、空列表或经过签到窗口不推断释放。测试流程说明见test/contracts/README.md，private-diagnostics/已被Git忽略。/status和历史归档展示的原始状态仅来自解析，不自动宣布真实协议已验证。
-
-## 本轮免费额度复核
-
-依旧只有一个SQLite DO。每天每分钟Cron约1440次；常规最多每轮index+getstatus两次，跨天多一次历史核验，重约另有受限回读。阻塞回读按退避执行，不连续每秒碰接口。DO网络等待计wall-clock时长，普通Worker网络等待不计CPU，两者不可混淆。按照单个128MB DO整日不休眠的极保守上界，86400 × 0.125 ≈10800 GB-s/日，低于免费13000 GB-s/日；这是本部署估算，不包含账号其他DO，实际仍需仪表盘观测。免费DO每日100000请求/100000行写入/500万行读取，总存储5GB。没有新增服务或自动付费切换。保留未知意图不以节省费用为理由清除。
+回滚先 /pause，关闭写入，私有备份原状态，然后选择理解新增计划 schema 的版本。旧版本会忽略计划并读取旧 vars，也可能丢弃新增字段，因此不能直接把旧代码作为安全运行方案。任何恢复必须保留不确定提交和监督状态。CI/真实场景验证、Git 推送/生产部署分别记账。

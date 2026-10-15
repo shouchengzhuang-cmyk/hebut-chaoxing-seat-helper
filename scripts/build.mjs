@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const sourceOrder = [
   'state-machine.js', 'logger.js', 'storage.js', 'clock.js', 'page-adapter.js', 'target-day-frame-loader.js',
   'submit-observer.js', 'diagnostics.js', 'scheduler.js', 'core.js', 'daily-controller.js', 'ui.js', 'userscript.js'
@@ -10,7 +11,7 @@ const sourceOrder = [
 const metadata = `// ==UserScript==
 // @name         HEBUT Chaoxing Seat Helper
 // @namespace    hebut-chaoxing-seat-helper
-// @version      1.2.0
+// @version      ${version}
 // @description  河北工业大学超星图书馆座位预约助手
 // @match        https://office.chaoxing.com/front/third/apps/seat/select*
 // @match        https://office.chaoxing.com/front/third/apps/seat/index*

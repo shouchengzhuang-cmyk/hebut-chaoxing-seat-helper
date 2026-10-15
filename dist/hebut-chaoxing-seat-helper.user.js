@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HEBUT Chaoxing Seat Helper
 // @namespace    hebut-chaoxing-seat-helper
-// @version      1.2.0
+// @version      1.3.0
 // @description  河北工业大学超星图书馆座位预约助手
 // @match        https://office.chaoxing.com/front/third/apps/seat/select*
 // @match        https://office.chaoxing.com/front/third/apps/seat/index*
