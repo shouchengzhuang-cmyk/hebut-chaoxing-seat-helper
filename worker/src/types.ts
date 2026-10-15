@@ -21,6 +21,12 @@ export interface Env {
   STATUS_PROFILE_VERIFIED?: string;
   POLL_SECONDS?: string;
   CHAOOXING_HALL_URL?: string;
+  RESERVATION_RULES_VERIFIED?: string;
+  RESERVATION_RULES_JSON?: string;
+  // Internal scoped coordinator requirement; never accepted from management JSON.
+  REQUIRE_RESERVATION_POLICY?: boolean;
+  SUBMIT_CONFLICT_PROFILE_VERIFIED?: string;
+  SUBMIT_CONFLICT_PROFILE_JSON?: string;
 }
 
 export interface ReservationParams {

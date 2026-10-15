@@ -1,7 +1,9 @@
 import type { RunResult, ReservationTarget } from "./types.ts";
 import type { Snapshot } from "./status.ts";
+import type { PlanStore } from "./plans.ts";
+import type { CheckinAttempt } from "./checkin.ts";
 export type AuthorizationSource = "MANUAL" | "CRON" | "REBOOK";
-export interface Operation {
+export interface ReservationAttempt {
   phase: "READY" | "SUBMITTED_UNVERIFIED" | "CONFIRMED" | "REJECTED";
   attempts: number;
   nextAttemptAt: number;
@@ -10,10 +12,12 @@ export interface Operation {
   authorizationSource?: AuthorizationSource;
   result?: RunResult;
 }
+export type Operation = ReservationAttempt;
 export interface ArchivedLifecycle {
   day: string;
   target: ReservationTarget;
   snapshot?: Snapshot;
+  snapshotAt?: number;
   archivedAt: number;
   reason: "SERVER_TERMINAL" | "LOCAL_TASK_INTERVAL_ENDED";
   // Local archival never invents a server completion/release.
@@ -29,12 +33,19 @@ export interface Handoff {
 }
 export interface AccountJournal {
   version: 1;
+  plans?: PlanStore;
+  checkin?: CheckinAttempt;
+  notificationIds?: string[];
+  candidateProgress?: { day: string; revision: number; index: number; nextAt: number; conflictOperationKey: string };
+  paused?: boolean;
+  nextRunAt?: number;
   day?: string;
   target?: ReservationTarget;
   archives: ArchivedLifecycle[];
   handoff?: Handoff;
   pendingRun?: { day: string; submitAt?: number; authorizationSource?: AuthorizationSource };
   snapshot?: Snapshot;
+  snapshotAt?: number;
   nextPollAt: number;
   pollFailures: number;
   reviewPending: boolean;

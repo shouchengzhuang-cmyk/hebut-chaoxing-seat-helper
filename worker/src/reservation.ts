@@ -13,12 +13,23 @@ export type SubmitOutcome =
   | { kind: "rejected"; retryable: boolean; code: string }
   | { kind: "ambiguous"; code: string };
 
+export function verifiedSeatConflict(body: Record<string, unknown>, env: Env): boolean {
+  if (env.SUBMIT_CONFLICT_PROFILE_VERIFIED !== "true" || body.success !== false) return false;
+  try {
+    const p = JSON.parse(env.SUBMIT_CONFLICT_PROFILE_JSON ?? "");
+    return p && typeof p.evidenceId === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(p.evidenceId) && p.codeField === "code" && Array.isArray(p.codes) && p.codes.length > 0 && p.codes.length <= 10
+      && p.codes.every((c: unknown) => typeof c === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(c) || typeof c === "number" && Number.isSafeInteger(c))
+      && p.codes.some((c: unknown) => c === body.code);
+  } catch { return false; }
+}
+
 export async function prepareReservation(env: Env, deps: ReservationDependencies = {}, targetDay?: string): Promise<PreparedReservation> {
   const target = targetFromEnv(env), day = targetDay ?? getTomorrowInShanghai(deps.now?.() ?? new Date());
   if (!validDay(day)) throw new AppError("AUTH_OR_PAGE_INVALID", "INVALID_TARGET_DAY");
   const page = new URL(officialUrl(env.CHAOOXING_RESERVE_PAGE_URL, "reserve", env));
   // Preserve the original page context while requesting the correct day.
   page.searchParams.set("day", day);
+  if (page.pathname.endsWith("/select")) page.searchParams.set("id", target.roomId);
   const response = await requestText(env, page.toString(), undefined, deps);
   if (response.status !== 200) throw new AppError("AUTH_OR_PAGE_INVALID", "RESERVE_PAGE_HTTP_ERROR");
   let salt: string;
@@ -45,6 +56,8 @@ export async function submitOnce(env: Env, prepared: PreparedReservation, deps: 
     if (/验证码|captcha|wyToken|安全验证|风控|监督/i.test(message)) return { kind: "rejected", retryable: false, code: "MANUAL_VERIFICATION_REQUIRED" };
     if (/登录|login|session|认证|失效/i.test(message)) return { kind: "rejected", retryable: false, code: "AUTH_EXPIRED" };
     if (/已预约|已经.*预约|重复预约|already.*reserv/i.test(message)) return { kind: "ambiguous", code: "DUPLICATE_REQUIRES_READBACK" };
+    if (/频繁|限流|rate|too many|稍后再试|操作过快/i.test(message)) return { kind: "rejected", retryable: false, code: "RATE_LIMITED" };
+    if (verifiedSeatConflict(body, env)) return { kind: "rejected", retryable: false, code: "SEAT_CONFLICT_VERIFIED" };
     return { kind: "rejected", retryable: /busy|繁忙|稍后/i.test(message), code: "EXPLICIT_REJECTION" };
   } catch { return { kind: "ambiguous", code: "SUBMIT_RESPONSE_LOST" }; }
 }

@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseDetail, parseIndex, parseRecord } from "../src/status.ts";
 import { checkContract } from "../scripts/check-contract.mjs";
 import { DiagnosticSanitizer } from "../../src/diagnostics.js";
@@ -115,7 +116,7 @@ test('CLI supports unmapped offline inspection without credentials or a profile 
   try {
     const path=join(dir,'sample.json');
     writeFileSync(path,JSON.stringify(bundle([sample({success:true,data:{curReserves:[{...record,status:84}],nearReserves:[]}})])));
-    const result=spawnSync(process.execPath,[new URL('../scripts/check-contract.mjs',import.meta.url).pathname,path],{encoding:'utf8',env:{}});
+    const result=spawnSync(process.execPath,[fileURLToPath(new URL('../scripts/check-contract.mjs',import.meta.url)),path],{encoding:'utf8',env:{}});
     assert.equal(result.status,0,result.stderr);
     const report=JSON.parse(result.stdout);
     assert.equal(report.reports[0].state,'UNKNOWN');assert.equal(report.productionCompatibilityConfirmed,false);
@@ -125,7 +126,7 @@ test('CLI failures do not echo private paths or malformed file contents',()=>{
   const dir=mkdtempSync(join(tmpdir(),'seat-contract-'));
   try {
     const path=join(dir,'PRIVATE_SENTINEL.json');writeFileSync(path,'PRIVATE_SENTINEL');
-    const result=spawnSync(process.execPath,[new URL('../scripts/check-contract.mjs',import.meta.url).pathname,path],{encoding:'utf8',env:{}});
+    const result=spawnSync(process.execPath,[fileURLToPath(new URL('../scripts/check-contract.mjs',import.meta.url)),path],{encoding:'utf8',env:{}});
     assert.equal(result.status,1);assert.equal(result.stdout,'');assert.equal(result.stderr.includes('PRIVATE_SENTINEL'),false);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });

@@ -38,6 +38,7 @@ export class LifecycleCoordinator {
     const previous = state.snapshot;
     if (state.day === day && previous?.record && !snapshot.record && snapshot.state === "UNKNOWN") snapshot = { ...snapshot, record: previous.record };
     state.snapshot = snapshot;
+    state.snapshotAt = nowOf(this.deps);
     if (state.day !== day || !state.target) state.target = targetFromEnv(this.env);
     state.day = day;
     if (snapshot.state === "REVIEW_REQUIRED" || snapshot.policy?.supervisionPending === true) {
@@ -160,14 +161,14 @@ export class LifecycleCoordinator {
     const terminal = observed.state === "COMPLETED" || observed.state === "RELEASED";
     if (!terminal && now < reservationEnd(oldDay, oldTarget) && observed.state !== "UNRESERVED") return this.blockHandoff(state, day, "OLD_INTERVAL_ACTIVE");
     const operations = Object.fromEntries(Object.entries(state.operations).filter(([key]) => key.startsWith(oldDay + "|")));
-    state.archives.push({ day: oldDay, target: oldTarget, snapshot: state.snapshot, archivedAt: now, reason: terminal ? "SERVER_TERMINAL" : "LOCAL_TASK_INTERVAL_ENDED", serverTerminalConfirmed: terminal, operations });
+    state.archives.push({ day: oldDay, target: oldTarget, snapshot: state.snapshot, snapshotAt: state.snapshotAt, archivedAt: now, reason: terminal ? "SERVER_TERMINAL" : "LOCAL_TASK_INTERVAL_ENDED", serverTerminalConfirmed: terminal, operations });
     state.archives = state.archives.slice(-30);
     if (observed.state === "UNKNOWN") {
       state.events.push({ id: `history-unknown:${oldDay}`, kind: "HISTORY_STATUS_UNVERIFIED", at: now });
       state.events = state.events.slice(-50);
     }
     safeLog("DAY_ARCHIVED", { day: oldDay, nextDay: day, serverTerminalConfirmed: terminal });
-    state.day = day; state.target = targetFromEnv(this.env); state.snapshot = undefined;
+    state.day = day; state.target = targetFromEnv(this.env); state.snapshot = undefined; state.snapshotAt = undefined; state.checkin = undefined;
     state.nextPollAt = 0; state.pollFailures = 0; state.handoff = undefined;
     await this.journal.save(state);
   }
@@ -206,6 +207,7 @@ export class LifecycleCoordinator {
     }
     if (op.phase === "SUBMITTED_UNVERIFIED") return failure("SUBMITTED_UNVERIFIED", day, "AWAIT_SERVER_CONFIRMATION");
     if (state.reviewPending || snapshot.state === "UNKNOWN" || snapshot.state === "REVIEW_REQUIRED" || snapshot.policy?.blacklisted || snapshot.policy?.supervisionPending) return failure("LIFECYCLE_BLOCKED", day, "UNVERIFIED_OR_RESTRICTED_STATE");
+    if (this.env.REQUIRE_RESERVATION_POLICY && !(snapshot.policy?.allowed && snapshot.policy.seatAvailable && !snapshot.policy.blacklisted && !snapshot.policy.supervisionPending)) return failure("LIFECYCLE_BLOCKED", day, "ELIGIBILITY_EVIDENCE_REQUIRED");
     if (generation === "initial" && snapshot.state !== "UNRESERVED") return failure("LIFECYCLE_BLOCKED", day, "NOT_UNRESERVED");
     if (generation !== "initial" && !this.canRebook(state, snapshot, now, false)) return failure("LIFECYCLE_BLOCKED", day, "REBOOK_POLICY_DENIED");
     if (authorizationError) {
@@ -222,6 +224,17 @@ export class LifecycleCoordinator {
       return failure("LIFECYCLE_BLOCKED", day, "CRON_SUBMISSION_WINDOW_MISSED");
     }
     if (!isFuture(this.env, day, nowOf(this.deps))) return failure("LIFECYCLE_BLOCKED", day, "START_TIME_PASSED");
+    if (this.env.REQUIRE_RESERVATION_POLICY) {
+      const fresh = await queryStatus(this.env, prepared.target, day, this.deps);
+      this.transition(state, fresh, day); await this.journal.save(state);
+      if (active(fresh) && fresh.record) {
+        op.phase = "CONFIRMED"; op.result = confirmed(this.env, day, fresh.record.id);
+        await this.journal.save(state); return op.result;
+      }
+      const eligibleState = generation === "initial" ? fresh.state === "UNRESERVED" : this.canRebook(state, fresh, nowOf(this.deps), false);
+      if (!eligibleState || state.reviewPending || !(fresh.policy?.allowed && fresh.policy.seatAvailable && !fresh.policy.blacklisted && !fresh.policy.supervisionPending)) return failure("LIFECYCLE_BLOCKED", day, "FINAL_ELIGIBILITY_RECHECK_DENIED");
+      if (!isFuture(this.env, day, nowOf(this.deps))) return failure("LIFECYCLE_BLOCKED", day, "START_TIME_PASSED");
+    }
     op.phase = "SUBMITTED_UNVERIFIED"; op.attempts += 1;
     op.result = failure("SUBMITTED_UNVERIFIED", day, "SUBMISSION_INTENT_SAVED");
     await this.journal.save(state); // Persist before sending any write.
