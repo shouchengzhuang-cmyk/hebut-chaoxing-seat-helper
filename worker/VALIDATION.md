@@ -1,3 +1,32 @@
+# Offline contract hardening — 2026-10-15
+
+Continued Draft PR #1 on `feat/worker-seat-lifecycle-20261013`, parent `fffab2bd8d8b331044c2d480689827e5814febd2`. The prior validation record below is historical; this section supersedes its test totals and “no response supplied” statement.
+
+## Evidence and scope
+
+Inspected the existing private anonymized read-only diagnostic locally. Its current/history arrays and millisecond timestamps are structurally parseable. No numeric school status meaning, detail-response contract, supervision rule, release rule or eligibility rule was established. No production mapping was added. The sample remains in gitignored `private-diagnostics/`; neither its records nor credentials are committed. Public regression fixtures are independently invented synthetic examples.
+
+## Changes
+
+- Offline checker now inspects every current/history record using explicit configured paths, reports per-record structural validity and state/reason, and keeps aggregate verification pending for unknown history or empty captures. Profile argument is optional and defaults to an empty state map.
+- Checker and runtime share profile validation. Invalid states, path types, unsupported path keys and prototype paths fail closed. Runtime rejects a malformed verified profile rather than silently accepting default empty lists.
+- Non-object envelopes, contradictory date aliases, missing status values and explicitly truncated captures cannot establish a lifecycle state. Field traversal requires own properties.
+- CLI errors omit input content and private paths. Reports omit identifiers, dates, raw codes, arbitrary fields and configured paths.
+
+## Checks actually executed
+
+Baseline before changes: root build + 70 tests; Workers typecheck + 129 tests; offline Wrangler build + 6 workerd/SQLite integration tests. All passed.
+
+Final: root `npm run check` (70 passed); Workers `npm run check` (typecheck, 151 unit tests, offline Wrangler build, 6 workerd/SQLite tests). Total **227 passed, 0 failed**, including **22 new regression tests**. Bundle 49.77 KiB / 13.47 KiB gzip. Generated userscript and contract CLI syntax checks and `git diff --check` passed. Private sample CLI inspection succeeded with the default empty map, retaining UNKNOWN for every record; production compatibility remains false.
+
+No Actions workflow runs were returned for the starting head. Verification above was performed locally; no remote CI success is implied.
+
+## Remaining blockers and safety
+
+Official UI/rule evidence for numeric state meanings, a matching getstatus sample and explicit rebooking-policy evidence remain missing. Live browser capture integration, credential lifetime, cloud reachability and production behavior remain unverified. `WRITES_ENABLED`, `MONITOR_ENABLED`, `AUTO_REBOOK_ENABLED`, `REBOOK_RULES_VERIFIED` and `STATUS_PROFILE_VERIFIED` remain false in the unchanged deployment configuration. No real school request, reservation, check-in, cancellation, deployment or merge was performed.
+
+---
+
 # Validation and delivery record — follow-up review
 
 Date: 2026-10-13. Reviewed existing Draft PR #1, branch feat/worker-seat-lifecycle-20261013, parent f1655d2c981edf6f8499d1ca27be9048eccbeebe. This is a follow-up on that branch, not a new PR.
