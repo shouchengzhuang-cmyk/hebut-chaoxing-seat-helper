@@ -22,7 +22,7 @@ export function parseRecord(value: unknown): ReservationRecord | undefined {
   const id = identity(r.id), roomId = identity(r.roomId), seatNum = identity(r.seatNum);
   const day = r.today ?? r.day ?? r.reserveDay;
   if ([r.today, r.day, r.reserveDay].some(value => value !== undefined && value !== day)) return;
-  if (!id || id === "0" || !roomId || !seatNum || typeof day !== "string" || !validDay(day)) return;
+  if (!id || /^0+$/.test(id) || !roomId || !seatNum || typeof day !== "string" || !validDay(day)) return;
   const startTime = time(r.startTime, day), endTime = time(r.endTime, day);
   if (!startTime || !endTime || startTime >= endTime) return;
   const rawStatus = typeof r.status === "string" || typeof r.status === "number" && Number.isFinite(r.status) ? String(r.status) : "";
