@@ -9,9 +9,10 @@ const patterns = [[ResultKind.HUMAN_VERIFICATION_REQUIRED, /验证码|安全|风
 export function classifyResult(result = {}) { if (result.success === true) return ResultKind.SUCCESS; if (result.networkError || result.timeout || !result.hasJson) return ResultKind.AMBIGUOUS; const msg = String(result.msg ?? ''); for (const [kind, regex] of patterns) if (regex.test(msg)) return kind; return ResultKind.AMBIGUOUS; }
 
 export class ReservationEngine {
-  constructor({ adapter, clock, scheduler, storage, logger, notifier = () => {}, now = () => Date.now(), lockApi = globalThis.navigator?.locks, targetDayFrameLoaderFactory = null, frameAdapterFactory = null, submitObserverFactory = null, retryScheduler = (work, delay) => setTimeout(work, delay) } = {}) {
+  constructor({ adapter, clock, scheduler, storage, logger, notifier = () => {}, now = () => Date.now(), lockApi = globalThis.navigator?.locks, submissionCoordinator = null, targetDayFrameLoaderFactory = null, frameAdapterFactory = null, submitObserverFactory = null, retryScheduler = (work, delay) => setTimeout(work, delay) } = {}) {
     this.adapter = adapter; this.clock = clock; this.scheduler = scheduler; this.storage = storage; this.logger = logger; this.notifier = notifier; this.now = now; this.lockApi = lockApi; this.retryScheduler = retryScheduler; this.stateListeners = new Set();
     this.targetDayFrameLoaderFactory = targetDayFrameLoaderFactory ?? (() => new TargetDayFrameLoader({ logger: this.logger })); this.frameAdapterFactory = frameAdapterFactory ?? ((refs) => new ChaoxingSeatPageAdapter({ ...refs, logger: this.logger })); this.submitObserverFactory = submitObserverFactory ?? ((options) => new SubmitObserver(options));
+    this.submissionCoordinator = submissionCoordinator;
     this.machine = this.createMachine(); this.settings = null; this.plan = null; this.attempts = 0; this.targetGateAttempts = 0; this.seatIndex = 0; this.inFlight = false; this.verifyTimer = null; this.leaseHeartbeatTimer = null; this.metrics = {}; this.owner = `${Math.random().toString(36).slice(2)}:${Date.now()}`; this.submissionLockHeld = false; this.targetLoader = null; this.frameAdapter = null; this.frameVm = null; this.frameObserver = null;
   }
   createMachine(initial = SeatState.IDLE) { return new SeatStateMachine(initial, (event) => { this.logger.log('info', 'STATE_CHANGED', event.to, event); for (const listener of this.stateListeners) listener(event); }); }
@@ -19,6 +20,10 @@ export class ReservationEngine {
   transition(to, reason) { if (this.machine.state !== to) this.machine.transition(to, reason); }
   status() { return { state: this.machine.state, settings: this.settings, plan: this.plan, attempts: this.attempts, targetGateAttempts: this.targetGateAttempts, seatIndex: this.seatIndex, inFlight: this.inFlight, submissionLeaseHeld: this.submissionLockHeld, iframeActive: Boolean(this.targetLoader?.frameWindow), attemptLedger: this.plan ? this.storage.getAttempt(this.plan.targetDay) : null, metrics: this.metrics, clock: this.clock.snapshot?.() }; }
   loadSettings() { this.settings = this.storage.getSettings(); return this.settings; }
+  updateSettings(settings) {
+    if (this.inFlight || ['VERIFYING', 'NEEDS_HUMAN', 'FIRING', 'LOADING_TARGET_DAY', 'TARGET_READY'].includes(this.machine.state)) throw new Error('EXISTING_ATTEMPT_FROZEN');
+    this.validateSettings(settings); this.stop('configuration changed'); this.storage.saveSettings(settings); this.settings = settings;
+  }
   async refreshClock() { const vm = this.adapter.getVue(); const snapshot = await this.clock.calibrate(this.adapter.location.href, 3, this.adapter.getServerTimeCandidates?.(vm) ?? []); this.logger.log('info', 'CLOCK_SYNC', this.machine.state, snapshot); return snapshot; }
   resetForNextDay(reason = 'daily rollover') { clearTimeout(this.verifyTimer); this.scheduler.stop(); this.releaseSubmissionLease(); this.destroyTargetFrame(); this.plan = null; this.attempts = 0; this.targetGateAttempts = 0; this.seatIndex = 0; this.inFlight = false; this.metrics = {}; this.owner = `${Math.random().toString(36).slice(2)}:${Date.now()}`; this.machine = this.createMachine(); this.logger.log('info', 'DAILY_CYCLE_RESET', this.machine.state, { reason }); }
   validateSettings(settings) {
@@ -36,6 +41,7 @@ export class ReservationEngine {
   }
   async dryRun() { return this.arm('dry-run'); }
   async arm(mode = this.settings?.mode ?? 'dry-run', { recovery = false } = {}) {
+    if (mode === 'live' && !this.submissionCoordinator) throw new Error('WORKER_ONLY: 请在独立 Worker 控制页执行，浏览器未连接持久协调器');
     if (this.machine.state !== SeatState.READY) await this.probe(); this.settings = { ...this.settings, mode }; this.validateSettings(this.settings); const vm = this.adapter.getVue(); const clock = await this.refreshClock();
     const targetDay = tomorrowShanghai(this.clock.now()); if (this.storage.getSuccess(targetDay)) throw new Error(`该日期已有成功预约记录: ${targetDay}`); if (mode === 'live' && this.storage.getAttempt(targetDay)) throw new Error(`该日期已有提交账本记录，拒绝重复提交: ${targetDay}`);
     const { context } = this.adapter.assertCompatible(vm, this.settings.expectedRoomId); const openAt = calculateOpenAt(targetDay, context.seatConfig.reserveBeforeDay, context.seatConfig.reserveBeforeTime); this.plan = { targetDay, openAt, fireAt: openAt + Number(this.settings.fireDelayMs), context, seats: this.settings.seatPriority.map(String), mode, target: null };
@@ -64,6 +70,9 @@ export class ReservationEngine {
     const prepared = this.frameAdapter.prepareReservation(target, vm); const selected = this.frameAdapter.getCurrentSelection(vm); if (selected.day !== target.day || String(selected.seatNum) !== String(seatNum) || selected.startTime !== target.startTime || selected.endTime !== target.endTime || selected.duration !== prepared.duration) throw new Error('TARGET_FRAME_PREPARE_RECHECK_FAILED'); this.plan.target = target; this.metrics.targetPrepareAt = this.clock.now(); this.metrics.target_prepare_at = this.metrics.targetPrepareAt; this.transition(SeatState.FIRING, 'target iframe final guard pass');
     this.logger.log('info', 'IFRAME_FINAL_GUARD_PASS', this.machine.state, { targetDay: target.day, iframeDay: selected.day, roomId: compatible.context.roomId, seatNum, startTime: target.startTime, endTime: target.endTime, duration: prepared.duration, finalUrl: this.targetLoader.inspect().finalUrl, mode: this.plan.mode });
     if (this.plan.mode !== 'live') { this.logger.log('info', 'IFRAME_DRY_RUN_WOULD_SUBMIT', this.machine.state, { targetDay: target.day, iframeDay: selected.day, roomId: compatible.context.roomId, seatNum, startTime: target.startTime, endTime: target.endTime, duration: prepared.duration, finalUrl: this.targetLoader.inspect().finalUrl }); return this.stop('dry-run complete'); }
+    // No production browser coordinator is installed: the Worker is the sole writer.
+    // Offline fixtures inject a coordinator to continue exercising the legacy page adapter.
+    if (!this.submissionCoordinator || !await this.submissionCoordinator.claim({ ...target, roomId: compatible.context.roomId })) throw new Error('PERSISTENT_COORDINATOR_REQUIRED');
     this.installFrameObserver(); this.acquireSubmissionLease(); this.storage.markSubmittedUnverified(this.plan.targetDay, { owner: this.owner, roomId: compatible.context.roomId, seatNum, startTime: target.startTime, endTime: target.endTime }); this.inFlight = true; this.attempts += 1; this.metrics.iframeSubmitCalledAt = this.clock.now(); this.metrics.iframe_submit_called_at = this.metrics.iframeSubmitCalledAt; this.storage.saveRuntime({ armed: true, targetDay: this.plan.targetDay, submittedTargetDay: this.plan.targetDay, plan: this.plan }); this.transition(SeatState.VERIFYING, 'official iframe vm.submit called'); this.logger.log('info', 'IFRAME_FIRE', this.machine.state, { attempt: this.attempts, seat: seatNum }); this.frameAdapter.submitOfficial(vm); this.beginVerification();
   }
   async fire() {

@@ -1,5 +1,5 @@
 export const DEFAULT_SETTINGS = Object.freeze({
-  expectedRoomId: '3747', seatPriority: ['216'], startTime: '08:00', endTime: '22:00', fireDelayMs: 100,
+  expectedRoomId: '3747', seatPriority: ['216'], startTime: '08:30', endTime: '22:00', fireDelayMs: 100,
   mode: 'dry-run', retryPolicy: { maxTotalSubmits: 4, gateRetryDelaysMs: [180, 260, 400], targetGateRetryDelaysMs: [0, 180, 260, 400, 650, 900], allowSeatFallback: true },
   autoArm: false, daysOfWeek: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], notifications: true, recoveryGraceMs: 3000
 });

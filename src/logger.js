@@ -1,9 +1,9 @@
-const SENSITIVE_KEY = /cookie|password|token|captcha|authorization|wyToken|enc|session/i;
+const SENSITIVE_KEY = /cookie|password|token|captcha|authorization|wyToken|enc|session|^uid$|reserveId|rawStatus|^msg$|headers|responseText/i;
 const SENSITIVE_TEXT = /(cookie|password|token|captcha|authorization|wyToken|enc|session)\s*[:=]\s*[^,\s&}]+/gi;
 
 export function redact(value) {
   if (value === null || value === undefined) return value;
-  if (typeof value === 'string') return value.replace(SENSITIVE_TEXT, '$1=[REDACTED]');
+  if (typeof value === 'string') return value.replace(/https:\/\/[^\s"'<>]+/g, (text) => { try { const url = new URL(text); return url.origin + url.pathname; } catch { return '[URL]'; } }).replace(SENSITIVE_TEXT, '$1=[REDACTED]');
   if (Array.isArray(value)) return value.map(redact);
   if (typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SENSITIVE_KEY.test(key) ? '[REDACTED]' : redact(item)]));
   return value;
