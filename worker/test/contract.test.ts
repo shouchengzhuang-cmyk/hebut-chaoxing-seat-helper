@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseDetail, parseIndex } from "../src/status.ts";
+import { parseDetail, parseIndex, parseRecord } from "../src/status.ts";
 import { checkContract } from "../scripts/check-contract.mjs";
 import { DiagnosticSanitizer } from "../../src/diagnostics.js";
 import { day, env, record, profile } from "./fixture.ts";
