@@ -1,3 +1,26 @@
+# Remote CI and zero-ID contract consistency — 2026-10-15
+
+Continued Draft PR #1 after commit `8928ba1`. This entry supersedes the earlier 227-test count below for this branch; no production activation is implied.
+
+## Parser and read-only anonymization
+
+The Worker already rejected numeric reservation ID `0`, but a zero-padded string such as `"000"` could pass the same check. Worse, read-only diagnostics aliased a zero ID to a valid positive value, so the offline checker could report an invalid source record as structurally valid. The runtime parser now rejects all-zero reservation IDs, and the diagnostics projection preserves only this non-identifying invalid sentinel rather than manufacturing a valid alias. A synthetic end-to-end regression covers `0`, `"0"`, and `"000"`.
+
+The committed generated userscript was synchronized with the source. A new GitHub Actions workflow, `.github/workflows/offline-checks.yml`, runs both root and Worker checks on development pushes / pull requests and fails if the committed userscript differs after regeneration. Jobs use only synthetic fixtures and intercepted outbound test requests; the workflow does not contain or load any school credentials.
+
+## Independently observed GitHub Actions results
+
+On development commit `359dac86e6a64c3a9b2cca61e8e04ad6cbed6707`, GitHub Actions run `38722699190` completed successfully:
+- Userscript: 70 tests passed / 0 failed; generated script consistency check passed.
+- Worker: TypeScript typecheck passed; 152 unit tests passed / 0 failed.
+- Wrangler local dry-run bundle produced 49.77 KiB (gzip 13.47 KiB).
+- Workerd / Miniflare SQLite DO integration: 6 tests passed / 0 failed.
+- Total: **228 passed / 0 failed**; both CI jobs succeeded.
+
+The CI environment did not verify school status meanings, live API behavior, production network reachability or real signup/check-in. `WRITES_ENABLED`, `MONITOR_ENABLED`, `AUTO_REBOOK_ENABLED`, `REBOOK_RULES_VERIFIED` and `STATUS_PROFILE_VERIFIED` remain false by default. No Cloudflare deployment, school write, check-in or PR merge was performed.
+
+---
+
 # Offline contract hardening — 2026-10-15
 
 Continued Draft PR #1 on `feat/worker-seat-lifecycle-20261013`, parent `fffab2bd8d8b331044c2d480689827e5814febd2`. The prior validation record below is historical; this section supersedes its test totals and “no response supplied” statement.
