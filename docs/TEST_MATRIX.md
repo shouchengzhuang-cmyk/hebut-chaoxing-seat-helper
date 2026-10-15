@@ -21,7 +21,7 @@
 | node --check dist/hebut-chaoxing-seat-helper.user.js | PASS | 生成脚本语法 |
 | 构建后 git diff --exit-code -- dist/... | PASS | 与已提交产物一致；CI 同样检查 |
 | git diff --check / git diff --cached --check | PASS | 无 whitespace 错误 |
-| GitHub Actions 原 workflow | BLOCKED，本轮尚未推送 | 自动审批要求对出站目标与内容单独确认；旧 HEAD 绿不冒充新 CI |
+| GitHub Actions 原 workflow | PASS，1939e9a 的 push/PR 两组检查全绿 | [push run](https://github.com/shouchengzhuang-cmyk/hebut-chaoxing-seat-helper/actions/runs/38733722451)、[PR run](https://github.com/shouchengzhuang-cmyk/hebut-chaoxing-seat-helper/actions/runs/38733728139)，用户批准后正常推送 |
 
 总计 **300 项测试**：75 + 217 + 8。定向检查与重跑不重复累计。完整最终命令在提交前重新运行，摘要保留于工作记录；临时 .log 不进入 Git。
 

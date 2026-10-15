@@ -21,6 +21,6 @@
 
 本轮三个本地工程提交：14efa96、6c96d14、88e8067。工作区核验干净，dist 重建与提交产物一致。最后补充此审批记录及 PR_DESCRIPTION.md，另作本地记录提交。
 
-推送/PR 更新：BLOCKED。自动审批在执行前拒绝正常 push 与 gh pr edit，理由是代码出站/公开 PR 修改需要对确切目标与 payload 单独确认。没有绕过或改用其他接口发布。待确认目标为原仓库 origin 的 feat/worker-seat-lifecycle-20261013，内容为本轮工程与记录提交及 docs/PR_DESCRIPTION.md 中说明；不合并、不强推、不部署。
+推送/PR 更新：PASS。首次自动审批在执行前拒绝正常 push 与 gh pr edit，要求对确切目标及内容单独确认；随后用户明确回复“批准推送并更新原 Draft PR #1”。据此正常推送 14efa96、6c96d14、88e8067、1939e9a 至原仓库 feat/worker-seat-lifecycle-20261013，并按 PR_DESCRIPTION.md 更新标题和正文。未新建 PR、未合并、未强推、未部署。
 
-新提交尚未触发远端 CI。接管时远端 8d85022 的 Actions 为 SUCCESS，不能冒充本轮 HEAD 的 CI。真实浏览器验收仍为 G1，学校真实验收为 E1–E5。
+远端代码 HEAD 1939e9a0e410bdf0c229335e06a917762798d5f8 已核验 OPEN / Draft。新触发的 [push Actions](https://github.com/shouchengzhuang-cmyk/hebut-chaoxing-seat-helper/actions/runs/38733722451) 和 [PR Actions](https://github.com/shouchengzhuang-cmyk/hebut-chaoxing-seat-helper/actions/runs/38733728139) 均 SUCCESS，各含 Userscript、Worker 类型/单元/SQLite 两个通过的 job。随后仅补充本次发布与 CI 记录，未改代码。真实浏览器验收仍为 G1，学校真实验收为 E1–E5。

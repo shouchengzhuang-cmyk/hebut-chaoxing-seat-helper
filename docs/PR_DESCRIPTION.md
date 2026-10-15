@@ -1,8 +1,10 @@
-# 待批准的 PR #1 更新内容
+# 已批准的 PR #1 更新内容
 
 推送目标：`origin` / `feat/worker-seat-lifecycle-20261013`，对应 `shouchengzhuang-cmyk/hebut-chaoxing-seat-helper` 的现有 PR #1。只作正常推送并更新标题与说明，保持 Draft，不合并、不强推、不部署。
 
 本轮工程提交：14efa96、6c96d14、88e8067。随后的记录提交只补充测试/审批状态和此说明。
+
+用户已明确批准正常推送并更新原 Draft PR #1，1939e9a 已推送且 push/PR 两组 CI 全绿；后续仅补发布记录。
 
 建议标题：运行期预约计划、持久协调与现场签到状态闭环
 
