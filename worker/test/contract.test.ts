@@ -96,6 +96,20 @@ test('invalid profile structures are rejected by the offline tool',()=>{
   for(const bad of [null, {states:null}, {states:[]}, {states:{x:'UNRESERVED'}}, {states:{},responsePaths:{current:23}}, {states:{},policyFields:'bad'}]) assert.throws(()=>checkContract(bundle([sample({})]),bad));
 });
 
+test('zero reservation IDs remain invalid through anonymization and offline contract checks',()=>{
+  for (const id of [0, '0', '000']) {
+    const raw={...record,id};
+    // The production parser and local diagnostic projection must agree.
+    assert.equal(parseRecord(raw),undefined);
+    const projected=new DiagnosticSanitizer().project({success:true,data:{curReserves:[raw],nearReserves:[]}},{apiStyle:'seat',endpoint:'index'});
+    const report=checkContract(bundle([projected]),profile).reports[0];
+    assert.equal(report.recordCount,1);
+    assert.equal(report.records[0].recordValid,false);
+    assert.equal(report.records[0].state,'UNKNOWN');
+    assert.equal(report.needsVerification,true);
+  }
+});
+
 test('CLI supports unmapped offline inspection without credentials or a profile file',()=>{
   const dir=mkdtempSync(join(tmpdir(),'seat-contract-'));
   try {
